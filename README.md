@@ -5,9 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://img.shields.io/pypi/v/synapto.svg)](https://pypi.org/project/synapto/)
 
-Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP.
+Persistent memory graph for AI coding agents — 3-way hybrid search, compositional algebra, knowledge graph, and time-based decay over MCP.
 
-Synapto replaces flat-file memory (like `MEMORY.md`) with a hybrid vector + graph database that gives any MCP-compatible AI agent or framework a production-grade memory layer.
+Synapto replaces flat-file memory (like `MEMORY.md`) with a hybrid vector + graph database that gives any MCP-compatible AI agent or framework a production-grade memory layer. It's the only memory server that can answer "find everything where Kafka AND Hermes both play a structural role" — not via keyword matching, but via algebraic vector operations that no embedding database can do.
 
 ## Try it in 60 seconds
 
@@ -29,32 +29,70 @@ synapto import MEMORY.md --format markdown
 synapto search "kafka message flow"
 ```
 
+## Why Synapto
+
+Most AI memory solutions do one thing: vector similarity search. Synapto combines **three search signals** and adds capabilities no other memory server has:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    recall("kafka patterns")                  │
+│                                                             │
+│  Signal 1: Vector Similarity (pgvector)                     │
+│    → "Hermes uses outbox relay for Kafka" scores 0.89       │
+│                                                             │
+│  Signal 2: Full-Text Search (tsvector + BM25)               │
+│    → matches "Kafka" keyword, boosts rank                   │
+│                                                             │
+│  Signal 3: HRR Compositional Algebra  ← only in Synapto    │
+│    → Kafka is structurally bound as an entity in this fact  │
+│    → algebraic extraction confirms structural role          │
+│                                                             │
+│  Final: RRF(signals) × decay × trust × depth_boost         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### What HRR enables that embeddings can't
+
+| Capability | Embeddings | Synapto HRR |
+|-----------|-----------|-------------|
+| "Find memories about Kafka" | Keyword/similarity match | Algebraic structural role detection |
+| "Find memories about Kafka AND Hermes together" | Hope both words appear nearby | Vector-space JOIN with AND semantics |
+| "Find contradictory memories" | Not possible | Entity overlap + content divergence analysis |
+| "Extract which entities are involved in a fact" | Not possible | `unbind(fact, role) → entity` |
+| Trust-based ranking | Not possible | Asymmetric feedback loop (+0.05 / -0.10) |
+
 ## Features
 
-- **Hybrid search** — combines vector similarity (pgvector) with full-text search using Reciprocal Rank Fusion (RRF)
+- **3-way hybrid search** — vector similarity + full-text + HRR compositional algebra, fused via Reciprocal Rank Fusion
+- **Holographic Reduced Representations** — algebraic `probe`, `reason` (multi-entity JOIN), and `contradict` (memory hygiene)
+- **Trust scoring** — asymmetric feedback loop that demotes bad memories 2x faster than it promotes good ones
 - **Knowledge graph** — entities and directed relations with N-hop traversal via recursive CTEs
 - **Depth-layered decay** — core memories persist forever, ephemeral ones fade in hours
+- **Contradiction detection** — automatically find memory pairs that share entities but disagree
 - **Multi-tenancy** — isolate memories per project/codebase
 - **Local-first** — default embedding model runs on CPU, no API keys required
+- **Versioned migrations** — SQL files with up/down sections, checksums, and rollback support
 - **MCP native** — works with Claude Code, Cursor, Windsurf, Codex, or any MCP client
 - **Framework agnostic** — usable as a library from LangGraph, Agno, CrewAI, or any Python agent
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────┐
-│            AI Agent / IDE                │
-│  (Claude Code, Cursor, Codex, etc.)      │
-└──────────────┬───────────────────────────┘
-               │ MCP (stdio)
-┌──────────────▼───────────────────────────┐
-│         Synapto MCP Server               │
-│                                          │
-│  Tools: remember, recall, relate,        │
-│         forget, graph_query,             │
-│         list_entities, memory_stats,     │
-│         maintain                         │
-└──────┬───────────────────┬───────────────┘
+┌──────────────────────────────────────────────┐
+│              AI Agent / IDE                  │
+│    (Claude Code, Cursor, Codex, etc.)        │
+└──────────────┬───────────────────────────────┘
+               │ MCP (stdio / SSE)
+┌──────────────▼───────────────────────────────┐
+│           Synapto MCP Server                 │
+│                                              │
+│  remember → embedding + HRR vector + entities│
+│  recall   → 3-way RRF (vector+FTS+HRR)      │
+│  relate   → knowledge graph edges            │
+│  trust_feedback → asymmetric scoring         │
+│  find_contradictions → memory hygiene        │
+│  graph_query, forget, maintain, ...          │
+└──────┬───────────────────┬───────────────────┘
        │                   │
 ┌──────▼──────┐    ┌───────▼──────┐
 │ PostgreSQL  │    │    Redis     │
@@ -63,8 +101,9 @@ synapto search "kafka message flow"
 │ • memories  │    │ • recent     │
 │ • entities  │    │   memories   │
 │ • relations │    │ • sessions   │
-│ • FTS index │    │ • decay      │
-│ • HNSW idx  │    │   scores     │
+│ • HRR vecs  │    │ • decay      │
+│ • FTS + HNSW│    │   scores     │
+│ • mem banks │    │              │
 └─────────────┘    └──────────────┘
 ```
 
@@ -99,9 +138,12 @@ psql -d synapto -c "CREATE EXTENSION vector;"
 
 # initialize schema and config
 synapto init
+
+# or interactive setup
+synapto init --interactive
 ```
 
-This creates the schema in PostgreSQL and a config file at `~/.synapto/config.toml`.
+This runs all migrations and creates a config file at `~/.synapto/config.toml`.
 
 ### Connect to Claude Code
 
@@ -137,10 +179,12 @@ Add to `.cursor/mcp.json`:
 
 | Tool | Description |
 |------|-------------|
-| `remember` | Store a memory with auto entity extraction |
-| `recall` | Hybrid semantic + keyword search with RRF ranking |
+| `remember` | Store a memory with auto entity extraction + HRR vector |
+| `recall` | 3-way hybrid search (vector + FTS + HRR) with RRF ranking |
 | `relate` | Create directed relations between entities |
 | `forget` | Soft-delete a memory |
+| `trust_feedback` | Adjust memory trust score (helpful +0.05 / unhelpful -0.10) |
+| `find_contradictions` | Detect memory pairs that share entities but disagree |
 | `graph_query` | Traverse the knowledge graph (N-hop) |
 | `list_entities` | Browse known entities |
 | `memory_stats` | View memory statistics |
@@ -150,9 +194,14 @@ Add to `.cursor/mcp.json`:
 
 ```bash
 synapto init                    # initialize database
+synapto init -i                 # interactive setup
 synapto serve                   # start MCP server
 synapto search "kafka topics"   # search from terminal
 synapto stats                   # show statistics
+synapto doctor                  # check system health
+synapto migrate status          # show migration status
+synapto migrate up              # apply pending migrations
+synapto migrate down --to 1     # rollback to version 1
 synapto export -o backup.json   # export memories
 synapto import data.json        # import from JSON
 synapto import MEMORY.md --format markdown  # migrate from MEMORY.md
@@ -216,6 +265,7 @@ from synapto.db.postgres import PostgresClient
 from synapto.db.migrations import run_migrations, ensure_hnsw_index
 from synapto.embeddings.registry import get_provider
 from synapto.search.hybrid import hybrid_search
+from synapto.hrr.retrieval import probe, reason
 
 async def main():
     pg = PostgresClient("postgresql://localhost/synapto")
@@ -225,22 +275,33 @@ async def main():
     provider = get_provider()
     await ensure_hnsw_index(pg, provider.dimension)
 
-    # store a memory
-    embedding = await provider.embed_one("Hermes uses the outbox pattern for Kafka")
-    await pg.execute(
-        "INSERT INTO memories (content, embedding, embedding_dim, tenant) VALUES (%s, %s, %s, %s);",
-        ("Hermes uses the outbox pattern for Kafka", embedding, provider.dimension, "myproject"),
-    )
-
-    # search
+    # 3-way hybrid search (vector + FTS + HRR)
     results = await hybrid_search(pg, provider, "message queue patterns", tenant="myproject")
     for r in results:
-        print(f"[{r.depth_layer}] {r.content}")
+        print(f"[{r.depth_layer}] trust={r.trust_score:.2f} {r.content}")
+
+    # HRR compositional search: find where "kafka" plays a structural role
+    hrr_results = await probe(pg, "kafka", tenant="myproject")
+
+    # multi-entity JOIN: memories about kafka AND hermes together
+    join_results = await reason(pg, ["kafka", "hermes"], tenant="myproject")
 
     await pg.close()
 
 asyncio.run(main())
 ```
+
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [HRR](docs/hrr.md) | Holographic Reduced Representations — algebra, 3-way search, compositional queries |
+| [Trust Scoring](docs/trust-scoring.md) | Asymmetric feedback loop and contradiction workflow |
+| [Migrations](docs/migrations.md) | Versioned SQL migration system with rollback support |
+| [Claude Code](docs/claude-code.md) | Integration guide for Claude Code |
+| [Cursor](docs/cursor.md) | Integration guide for Cursor |
+| [LangGraph](docs/langgraph.md) | Using Synapto as a LangGraph tool |
+| [Agno](docs/agno.md) | Using Synapto with Agno agents |
 
 ## Development
 
