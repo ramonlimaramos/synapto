@@ -1,4 +1,4 @@
-"""Hybrid search engine — combines vector similarity, full-text, decay, and depth boosting via RRF."""
+"""Hybrid search engine — combines vector similarity, full-text, HRR, decay, and depth boosting via RRF."""
 
 from __future__ import annotations
 
@@ -19,8 +19,13 @@ DEPTH_BOOST = {
     "ephemeral": 0.5,
 }
 
-# NOTE: {dim} is injected via str.format() (safe — it's always an int from provider.dimension).
-# query params use %(name)s placeholders for psycopg.
+# 3-way RRF: semantic + keyword + HRR scoring.
+# HRR scoring is done client-side (Python) because it uses bytea vectors
+# that PostgreSQL cannot natively rank. The SQL query fetches candidates from
+# semantic + keyword, then Python adds the HRR signal.
+#
+# NOTE: {dim} is injected via str.format() (safe — always an int from provider.dimension).
+# Query params use %(name)s placeholders for psycopg.
 RRF_QUERY_TEMPLATE = """
 WITH semantic_search AS (
     SELECT
@@ -55,10 +60,12 @@ SELECT
     m.tenant,
     m.depth_layer,
     m.decay_score,
+    m.trust_score,
     m.metadata,
     m.access_count,
     m.created_at,
     m.accessed_at,
+    m.hrr_vector,
     COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
     COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0) AS rrf_score
 FROM memories m
@@ -69,6 +76,7 @@ ORDER BY
     (COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
      COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0)) *
     m.decay_score *
+    m.trust_score *
     CASE m.depth_layer
         WHEN 'core' THEN 1.5
         WHEN 'stable' THEN 1.2
@@ -89,8 +97,29 @@ class SearchResult:
     tenant: str
     depth_layer: str
     decay_score: float
+    trust_score: float
     rrf_score: float
     metadata: dict[str, Any]
+
+
+def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
+    """Compute HRR similarity boost for a candidate memory.
+
+    Returns a value in [0, hrr_weight] that gets added to the RRF score.
+    Gracefully returns 0.0 if hrr_vector is None (backward compat).
+    """
+    if not hrr_vector:
+        return 0.0
+    try:
+        from synapto.hrr.core import bytes_to_phases, encode_text, similarity
+
+        query_vec = encode_text(query)
+        memory_vec = bytes_to_phases(hrr_vector)
+        sim = similarity(query_vec, memory_vec)
+        # map [-1, 1] to [0, hrr_weight]
+        return ((sim + 1.0) / 2.0) * hrr_weight
+    except Exception:
+        return 0.0
 
 
 async def hybrid_search(
@@ -102,7 +131,7 @@ async def hybrid_search(
     limit: int = 10,
     rrf_k: int = 60,
 ) -> list[SearchResult]:
-    """Execute hybrid RRF search combining vector similarity and full-text."""
+    """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR."""
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
@@ -117,11 +146,21 @@ async def hybrid_search(
         "query": query,
         "tenant": tenant,
         "rrf_k": rrf_k,
-        "limit": limit,
+        "limit": limit * 2,  # fetch extra for HRR reranking
     })
 
-    if rows:
-        ids = [row["id"] for row in rows]
+    # apply HRR boost and rerank
+    scored_rows = []
+    for row in rows:
+        hrr_boost = _compute_hrr_boost(query, row.get("hrr_vector"))
+        final_score = float(row["rrf_score"]) + hrr_boost
+        scored_rows.append((row, final_score))
+
+    scored_rows.sort(key=lambda x: x[1], reverse=True)
+    scored_rows = scored_rows[:limit]
+
+    if scored_rows:
+        ids = [row["id"] for row, _ in scored_rows]
         await client.execute(
             "UPDATE memories SET accessed_at = now(), access_count = access_count + 1 "
             "WHERE id = ANY(%s);",
@@ -137,16 +176,17 @@ async def hybrid_search(
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],
-            rrf_score=row["rrf_score"],
+            trust_score=row.get("trust_score", 0.5),
+            rrf_score=final_score,
             metadata=row["metadata"] or {},
         )
-        for row in rows
+        for row, final_score in scored_rows
     ]
 
 
 VECTOR_ONLY_TEMPLATE = """
 SELECT
-    id, content, summary, type, tenant, depth_layer, decay_score, metadata,
+    id, content, summary, type, tenant, depth_layer, decay_score, trust_score, metadata,
     access_count, created_at, accessed_at,
     1 - (embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS similarity
 FROM memories
@@ -191,6 +231,7 @@ async def vector_search(
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],
+            trust_score=row.get("trust_score", 0.5),
             rrf_score=row.get("similarity", 0.0),
             metadata=row["metadata"] or {},
         )

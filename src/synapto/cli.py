@@ -319,6 +319,104 @@ def doctor() -> None:
     click.echo()
 
 
+@main.group()
+def migrate() -> None:
+    """Database migration management."""
+
+
+main.add_command(migrate)
+
+
+@migrate.command(name="up")
+@click.option("--pg-dsn", envvar="SYNAPTO_PG_DSN", default=None)
+@click.option("--to", "target", default=None, type=int, help="apply up to this version")
+def migrate_up(pg_dsn: str | None, target: int | None) -> None:
+    """Apply all pending migrations."""
+
+    async def _up():
+        from synapto.config import load_config
+        from synapto.db.migrations import get_schema_version, migrate_up
+        from synapto.db.postgres import PostgresClient
+
+        config = load_config()
+        dsn = pg_dsn or config.pg_dsn
+        client = PostgresClient(dsn, min_size=1, max_size=2)
+        await client.connect()
+        applied = await migrate_up(client, target_version=target)
+        version = await get_schema_version(client)
+        await client.close()
+        return applied, version
+
+    applied, version = _run(_up())
+    if applied:
+        for f in applied:
+            click.echo(click.style(f"  applied: {f}", fg="green"))
+        click.echo(f"\nschema now at v{version}")
+    else:
+        click.echo(f"all migrations up to date (v{version})")
+
+
+@migrate.command(name="down")
+@click.option("--pg-dsn", envvar="SYNAPTO_PG_DSN", default=None)
+@click.option("--to", "target", default=0, type=int, help="rollback to this version (exclusive)")
+def migrate_down(pg_dsn: str | None, target: int) -> None:
+    """Rollback migrations to a target version."""
+
+    async def _down():
+        from synapto.config import load_config
+        from synapto.db.migrations import get_schema_version
+        from synapto.db.migrations import migrate_down as _migrate_down
+        from synapto.db.postgres import PostgresClient
+
+        config = load_config()
+        dsn = pg_dsn or config.pg_dsn
+        client = PostgresClient(dsn, min_size=1, max_size=2)
+        await client.connect()
+        rolled_back = await _migrate_down(client, target_version=target)
+        version = await get_schema_version(client)
+        await client.close()
+        return rolled_back, version
+
+    rolled_back, version = _run(_down())
+    if rolled_back:
+        for f in rolled_back:
+            click.echo(click.style(f"  rolled back: {f}", fg="yellow"))
+        click.echo(f"\nschema now at v{version or 0}")
+    else:
+        click.echo("nothing to roll back")
+
+
+@migrate.command(name="status")
+@click.option("--pg-dsn", envvar="SYNAPTO_PG_DSN", default=None)
+def migrate_status(pg_dsn: str | None) -> None:
+    """Show migration status."""
+
+    async def _status():
+        from synapto.config import load_config
+        from synapto.db.migrations import get_migration_status
+        from synapto.db.postgres import PostgresClient
+
+        config = load_config()
+        dsn = pg_dsn or config.pg_dsn
+        client = PostgresClient(dsn, min_size=1, max_size=2)
+        await client.connect()
+        status = await get_migration_status(client)
+        await client.close()
+        return status
+
+    statuses = _run(_status())
+    if not statuses:
+        click.echo("no migrations found")
+        return
+
+    for s in statuses:
+        if s["status"] == "applied":
+            checksum = " (checksum mismatch!)" if s["checksum_ok"] is False else ""
+            click.echo(click.style(f"  [applied] {s['filename']}{checksum}", fg="green"))
+        else:
+            click.echo(click.style(f"  [pending] {s['filename']}", fg="yellow"))
+
+
 @main.command(name="export")
 @click.option("--tenant", "-t", default=None, help="tenant/project scope")
 @click.option("--output", "-o", default="-", help="output file (- for stdout)")

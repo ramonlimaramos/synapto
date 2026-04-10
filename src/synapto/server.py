@@ -20,9 +20,14 @@ from synapto.graph.entities import (
     create_entity,
     extract_entities_from_text,
     link_memory_to_entity,
+)
+from synapto.graph.entities import (
     list_entities as list_entities_db,
 )
 from synapto.graph.relations import create_relation_by_name
+from synapto.hrr.banks import rebuild_bank
+from synapto.hrr.core import DEFAULT_DIM, encode_fact, phases_to_bytes
+from synapto.hrr.retrieval import contradict as hrr_contradict
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
 
@@ -137,16 +142,29 @@ async def remember(
     )
     memory_id = row["id"]
 
+    entity_names = []
     if extract_entities:
-        entities = extract_entities_from_text(content)
-        for entity_name in entities:
+        entity_names = extract_entities_from_text(content)
+        for entity_name in entity_names:
             eid = await create_entity(pg, entity_name, "concept", t, provider=provider)
             await link_memory_to_entity(pg, memory_id, eid)
+
+    # compute and store HRR vector for compositional search
+    try:
+        hrr_vec = encode_fact(content, entity_names)
+        await pg.execute(
+            "UPDATE memories SET hrr_vector = %s, hrr_dim = %s WHERE id = %s;",
+            (phases_to_bytes(hrr_vec), DEFAULT_DIM, memory_id),
+        )
+        bank_name = f"{t}:{memory_type}"
+        await rebuild_bank(pg, bank_name, t, type_filter=memory_type)
+    except Exception as e:
+        logger.warning("hrr vector computation failed for %s: %s", memory_id, e)
 
     cache = _get_cache()
     await cache.cache_memory(memory_id, {"content": content, "type": memory_type, "tenant": t})
 
-    entity_count = len(entities) if extract_entities else 0
+    entity_count = len(entity_names)
     return f"stored memory {memory_id} ({depth_layer}, {entity_count} entities linked)"
 
 
@@ -177,7 +195,8 @@ async def recall(
     output = []
     for r in results:
         output.append(
-            f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} decay={r.decay_score:.2f}\n"
+            f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} "
+            f"decay={r.decay_score:.2f} trust={r.trust_score:.2f}\n"
             f"  {r.content[:200]}{'...' if len(r.content) > 200 else ''}\n"
             f"  id={r.id}"
         )
@@ -350,3 +369,63 @@ async def maintain() -> str:
     updated = await update_decay_scores(pg)
     cleaned = await cleanup_ephemeral(pg, _config.decay_ephemeral_max_age_hours)
     return f"maintenance complete: {updated} decay scores updated, {cleaned} ephemeral memories cleaned"
+
+
+@mcp.tool
+async def trust_feedback(memory_id: str, helpful: bool) -> str:
+    """Adjust a memory's trust score based on feedback.
+
+    Trust is adjusted asymmetrically: helpful +0.05, unhelpful -0.10.
+    This ensures bad memories are demoted faster than good ones are promoted.
+
+    Args:
+        memory_id: UUID of the memory
+        helpful: whether the memory was helpful
+    """
+    pg = _get_pg()
+    delta = 0.05 if helpful else -0.10
+
+    rows = await pg.execute(
+        """
+        UPDATE memories
+        SET trust_score = GREATEST(0.0, LEAST(1.0, trust_score + %s))
+        WHERE id = %s AND deleted_at IS NULL
+        RETURNING id, trust_score;
+        """,
+        (delta, memory_id),
+    )
+    if rows:
+        new_score = rows[0]["trust_score"]
+        direction = "boosted" if helpful else "penalized"
+        return f"memory {memory_id} {direction} — trust_score now {new_score:.2f}"
+    return f"memory {memory_id} not found or already deleted"
+
+
+@mcp.tool
+async def find_contradictions(tenant: str | None = None, threshold: float = 0.3) -> str:
+    """Detect potentially contradictory memories.
+
+    Finds memory pairs that share entities (same subject) but have divergent
+    content (different claims). Useful for memory hygiene.
+
+    Args:
+        tenant: project/tenant scope
+        threshold: minimum contradiction score to report (0.0-1.0)
+    """
+    pg = _get_pg()
+    t = tenant or _config.default_tenant
+
+    results = await hrr_contradict(pg, tenant=t, threshold=threshold)
+    if not results:
+        return "no contradictions found"
+
+    output = [f"found {len(results)} potential contradiction(s):\n"]
+    for c in results:
+        output.append(
+            f"score={c.contradiction_score:.3f} "
+            f"(entity_overlap={c.entity_overlap:.2f}, content_sim={c.content_similarity:.2f})\n"
+            f"  A: [{c.memory_a.depth_layer}] {c.memory_a.content[:120]}...\n"
+            f"  B: [{c.memory_b.depth_layer}] {c.memory_b.content[:120]}...\n"
+            f"  shared: {', '.join(c.shared_entities)}"
+        )
+    return "\n\n".join(output)
