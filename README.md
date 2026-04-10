@@ -5,13 +5,24 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://img.shields.io/pypi/v/synapto.svg)](https://pypi.org/project/synapto/)
 
-Persistent memory graph for AI coding agents — 3-way hybrid search, compositional algebra, knowledge graph, and time-based decay over MCP.
+**Your AI agent forgets everything between sessions. Synapto fixes that.**
 
-Synapto replaces flat-file memory (like `MEMORY.md`) with a hybrid vector + graph database that gives any MCP-compatible AI agent or framework a production-grade memory layer. It's the only memory server that can answer "find everything where Kafka AND Hermes both play a structural role" — not via keyword matching, but via algebraic vector operations that no embedding database can do.
+Flat-file memory (`MEMORY.md`) doesn't scale — no search, no structure, no decay. Synapto gives any MCP-compatible agent a real memory: store once, recall by meaning, watch bad memories fade and good ones persist.
+
+```bash
+# remember
+"Hermes uses the outbox relay pattern for Kafka"
+
+# recall — weeks later, different session
+"How does Hermes handle messaging?"
+→ [stable] Hermes uses the outbox relay pattern for Kafka (score=0.94, trust=0.65)
+```
+
+Works with Claude Code, Cursor, Windsurf, Codex, LangGraph, Agno, or any MCP client.
 
 ## Try it in 60 seconds
 
-**Docker** (recommended):
+**Docker:**
 
 ```bash
 git clone https://github.com/ramonlimaramos/synapto.git && cd synapto
@@ -19,93 +30,24 @@ docker compose up -d
 docker compose exec synapto synapto search "hello world"
 ```
 
-**Local**:
+**Local:**
 
 ```bash
 pip install synapto
 createdb synapto && psql -d synapto -c "CREATE EXTENSION vector;"
 synapto init
-synapto import MEMORY.md --format markdown
-synapto search "kafka message flow"
+synapto search "hello world"
 ```
 
-## Why Synapto
+## What it does
 
-Most AI memory solutions do one thing: vector similarity search. Synapto combines **three search signals** and adds capabilities no other memory server has:
+**Search** — Ask a question, get the best memory. Behind the scenes, three signals (vector similarity, full-text, and compositional algebra) are fused into one score. You just call `recall`.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    recall("kafka patterns")                  │
-│                                                             │
-│  Signal 1: Vector Similarity (pgvector)                     │
-│    → "Hermes uses outbox relay for Kafka" scores 0.89       │
-│                                                             │
-│  Signal 2: Full-Text Search (tsvector + BM25)               │
-│    → matches "Kafka" keyword, boosts rank                   │
-│                                                             │
-│  Signal 3: HRR Compositional Algebra  ← only in Synapto    │
-│    → Kafka is structurally bound as an entity in this fact  │
-│    → algebraic extraction confirms structural role          │
-│                                                             │
-│  Final: RRF(signals) × decay × trust × depth_boost         │
-└─────────────────────────────────────────────────────────────┘
-```
+**Graph** — Entities are auto-extracted and linked. Ask "what depends on Kafka?" and get an answer via graph traversal, not keyword guessing.
 
-### What HRR enables that embeddings can't
+**Decay** — Core memories live forever. Ephemeral notes fade in hours. Working context lasts about a week. Memories that get used stay alive; unused ones sink.
 
-| Capability | Embeddings | Synapto HRR |
-|-----------|-----------|-------------|
-| "Find memories about Kafka" | Keyword/similarity match | Algebraic structural role detection |
-| "Find memories about Kafka AND Hermes together" | Hope both words appear nearby | Vector-space JOIN with AND semantics |
-| "Find contradictory memories" | Not possible | Entity overlap + content divergence analysis |
-| "Extract which entities are involved in a fact" | Not possible | `unbind(fact, role) → entity` |
-| Trust-based ranking | Not possible | Asymmetric feedback loop (+0.05 / -0.10) |
-
-## Features
-
-- **3-way hybrid search** — vector similarity + full-text + HRR compositional algebra, fused via Reciprocal Rank Fusion
-- **Holographic Reduced Representations** — algebraic `probe`, `reason` (multi-entity JOIN), and `contradict` (memory hygiene)
-- **Trust scoring** — asymmetric feedback loop that demotes bad memories 2x faster than it promotes good ones
-- **Knowledge graph** — entities and directed relations with N-hop traversal via recursive CTEs
-- **Depth-layered decay** — core memories persist forever, ephemeral ones fade in hours
-- **Contradiction detection** — automatically find memory pairs that share entities but disagree
-- **Multi-tenancy** — isolate memories per project/codebase
-- **Local-first** — default embedding model runs on CPU, no API keys required
-- **Versioned migrations** — SQL files with up/down sections, checksums, and rollback support
-- **MCP native** — works with Claude Code, Cursor, Windsurf, Codex, or any MCP client
-- **Framework agnostic** — usable as a library from LangGraph, Agno, CrewAI, or any Python agent
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────┐
-│              AI Agent / IDE                  │
-│    (Claude Code, Cursor, Codex, etc.)        │
-└──────────────┬───────────────────────────────┘
-               │ MCP (stdio / SSE)
-┌──────────────▼───────────────────────────────┐
-│           Synapto MCP Server                 │
-│                                              │
-│  remember → embedding + HRR vector + entities│
-│  recall   → 3-way RRF (vector+FTS+HRR)      │
-│  relate   → knowledge graph edges            │
-│  trust_feedback → asymmetric scoring         │
-│  find_contradictions → memory hygiene        │
-│  graph_query, forget, maintain, ...          │
-└──────┬───────────────────┬───────────────────┘
-       │                   │
-┌──────▼──────┐    ┌───────▼──────┐
-│ PostgreSQL  │    │    Redis     │
-│ + pgvector  │    │  (hot cache) │
-│             │    │              │
-│ • memories  │    │ • recent     │
-│ • entities  │    │   memories   │
-│ • relations │    │ • sessions   │
-│ • HRR vecs  │    │ • decay      │
-│ • FTS + HNSW│    │   scores     │
-│ • mem banks │    │              │
-└─────────────┘    └──────────────┘
-```
+**Trust** — Mark memories as helpful or not. Bad info gets demoted 2x faster than good info gets promoted. Over time, your memory self-cleans.
 
 ## Quickstart
 
@@ -115,39 +57,17 @@ Most AI memory solutions do one thing: vector similarity search. Synapto combine
 - PostgreSQL 14+ with [pgvector](https://github.com/pgvector/pgvector)
 - Redis 7+
 
-### Install
+### Install and initialize
 
 ```bash
 pip install synapto
+createdb synapto && psql -d synapto -c "CREATE EXTENSION vector;"
+synapto init            # or: synapto init --interactive
 ```
 
-Or from source:
+### Connect to your agent
 
-```bash
-git clone https://github.com/ramonlimaramos/synapto.git
-cd synapto
-pip install -e ".[dev]"
-```
-
-### Initialize
-
-```bash
-# create the database first
-createdb synapto
-psql -d synapto -c "CREATE EXTENSION vector;"
-
-# initialize schema and config
-synapto init
-
-# or interactive setup
-synapto init --interactive
-```
-
-This runs all migrations and creates a config file at `~/.synapto/config.toml`.
-
-### Connect to Claude Code
-
-Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.claude/settings.json`):
+**Claude Code** (`~/.claude/settings.json`):
 
 ```json
 {
@@ -160,9 +80,7 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or project `.claud
 }
 ```
 
-### Connect to Cursor
-
-Add to `.cursor/mcp.json`:
+**Cursor** (`.cursor/mcp.json`):
 
 ```json
 {
@@ -174,49 +92,62 @@ Add to `.cursor/mcp.json`:
   }
 }
 ```
+
+Restart your agent. Synapto tools appear automatically.
 
 ## MCP Tools
 
-| Tool | Description |
+| Tool | What it does |
 |------|-------------|
-| `remember` | Store a memory with auto entity extraction + HRR vector |
-| `recall` | 3-way hybrid search (vector + FTS + HRR) with RRF ranking |
-| `relate` | Create directed relations between entities |
+| `remember` | Store a memory (entities and search vectors are created automatically) |
+| `recall` | Search memories by meaning |
+| `relate` | Link two entities ("Hermes" --[produces]--> "agent.messages") |
 | `forget` | Soft-delete a memory |
-| `trust_feedback` | Adjust memory trust score (helpful +0.05 / unhelpful -0.10) |
-| `find_contradictions` | Detect memory pairs that share entities but disagree |
-| `graph_query` | Traverse the knowledge graph (N-hop) |
+| `trust_feedback` | Mark a memory as helpful or unhelpful |
+| `find_contradictions` | Find memory pairs that disagree |
+| `graph_query` | Walk the knowledge graph (N-hop) |
 | `list_entities` | Browse known entities |
-| `memory_stats` | View memory statistics |
-| `maintain` | Run decay updates and cleanup |
+| `memory_stats` | View counts and distribution |
+| `maintain` | Run decay and cleanup |
 
 ## CLI
 
 ```bash
-synapto init                    # initialize database
-synapto init -i                 # interactive setup
 synapto serve                   # start MCP server
 synapto search "kafka topics"   # search from terminal
-synapto stats                   # show statistics
-synapto doctor                  # check system health
-synapto migrate status          # show migration status
-synapto migrate up              # apply pending migrations
-synapto migrate down --to 1     # rollback to version 1
+synapto doctor                  # check postgres, redis, embeddings health
+synapto stats                   # memory statistics
+synapto migrate status          # show applied/pending migrations
 synapto export -o backup.json   # export memories
-synapto import data.json        # import from JSON
-synapto import MEMORY.md --format markdown  # migrate from MEMORY.md
+synapto import MEMORY.md --format markdown  # migrate from flat files
 ```
 
 ## Depth Layers
 
-Memories are categorized into layers that control how quickly they decay:
+| Layer | Half-life | Example |
+|-------|-----------|---------|
+| `core` | Forever | "Our API uses REST, never GraphQL" |
+| `stable` | ~6 months | "Auth service is in Go, everything else is Python" |
+| `working` | ~1 week | "Currently refactoring the payment module" |
+| `ephemeral` | ~6 hours | "Debugging: the timeout was 30s, changed to 60s" |
 
-| Layer | Half-life | Use case |
-|-------|-----------|----------|
-| `core` | Never decays | Architecture principles, key decisions |
-| `stable` | ~6 months | Established patterns, conventions |
-| `working` | ~1 week | Current sprint context |
-| `ephemeral` | ~6 hours | Debug notes, temporary observations |
+## How it works under the hood
+
+When you call `recall("kafka patterns")`, Synapto runs three searches in parallel and fuses the results:
+
+1. **Vector similarity** (pgvector HNSW) — finds semantically close memories
+2. **Full-text search** (tsvector + BM25) — finds keyword matches
+3. **HRR compositional algebra** — detects if "kafka" plays a structural role in the memory, not just appears as a word
+
+The scores are combined via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), then weighted by decay, trust, and depth layer.
+
+HRR (Holographic Reduced Representations) also enables queries that no vector database can do:
+
+- **`probe("kafka")`** — find memories where Kafka is structurally involved (not just mentioned)
+- **`reason(["kafka", "hermes"])`** — find memories about both entities simultaneously (vector-space AND)
+- **`contradict()`** — find memory pairs that share entities but say different things
+
+More in [docs/hrr.md](docs/hrr.md).
 
 ## Configuration
 
@@ -230,8 +161,8 @@ dsn = "postgresql://localhost/synapto"
 url = "redis://localhost:6379/0"
 
 [embeddings]
-provider = ""  # auto-select (sentence-transformers default, openai if API key set)
-model = ""     # model name override
+provider = ""  # auto-select (sentence-transformers on CPU, openai if API key set)
+model = ""
 
 [defaults]
 tenant = "default"
@@ -241,65 +172,37 @@ ephemeral_max_age_hours = 24
 purge_after_days = 30
 ```
 
-Environment variable overrides:
+All values can be overridden with environment variables: `SYNAPTO_PG_DSN`, `SYNAPTO_REDIS_URL`, `SYNAPTO_EMBEDDING_PROVIDER`, `SYNAPTO_DEFAULT_TENANT`.
 
-| Variable | Description |
-|----------|-------------|
-| `SYNAPTO_PG_DSN` | PostgreSQL connection string |
-| `SYNAPTO_REDIS_URL` | Redis URL |
-| `SYNAPTO_EMBEDDING_PROVIDER` | Provider name |
-| `SYNAPTO_DEFAULT_TENANT` | Default tenant |
-
-## Embedding Providers
-
-| Provider | Dimension | Requires API Key | Install |
-|----------|-----------|-------------------|---------|
-| sentence-transformers (default) | 384 | No | included |
-| OpenAI text-embedding-3-small | 1536 | Yes | `pip install synapto[openai]` |
-
-## Using as a Python Library
+## Using as a Python library
 
 ```python
-import asyncio
 from synapto.db.postgres import PostgresClient
 from synapto.db.migrations import run_migrations, ensure_hnsw_index
 from synapto.embeddings.registry import get_provider
 from synapto.search.hybrid import hybrid_search
-from synapto.hrr.retrieval import probe, reason
 
-async def main():
-    pg = PostgresClient("postgresql://localhost/synapto")
-    await pg.connect()
-    await run_migrations(pg)
+pg = PostgresClient("postgresql://localhost/synapto")
+await pg.connect()
+await run_migrations(pg)
 
-    provider = get_provider()
-    await ensure_hnsw_index(pg, provider.dimension)
+provider = get_provider()
+await ensure_hnsw_index(pg, provider.dimension)
 
-    # 3-way hybrid search (vector + FTS + HRR)
-    results = await hybrid_search(pg, provider, "message queue patterns", tenant="myproject")
-    for r in results:
-        print(f"[{r.depth_layer}] trust={r.trust_score:.2f} {r.content}")
-
-    # HRR compositional search: find where "kafka" plays a structural role
-    hrr_results = await probe(pg, "kafka", tenant="myproject")
-
-    # multi-entity JOIN: memories about kafka AND hermes together
-    join_results = await reason(pg, ["kafka", "hermes"], tenant="myproject")
-
-    await pg.close()
-
-asyncio.run(main())
+results = await hybrid_search(pg, provider, "outbox pattern", tenant="myproject")
+for r in results:
+    print(f"[{r.depth_layer}] trust={r.trust_score:.2f} {r.content}")
 ```
 
 ## Documentation
 
-| Doc | Description |
-|-----|-------------|
-| [HRR](docs/hrr.md) | Holographic Reduced Representations — algebra, 3-way search, compositional queries |
-| [Trust Scoring](docs/trust-scoring.md) | Asymmetric feedback loop and contradiction workflow |
-| [Migrations](docs/migrations.md) | Versioned SQL migration system with rollback support |
-| [Claude Code](docs/claude-code.md) | Integration guide for Claude Code |
-| [Cursor](docs/cursor.md) | Integration guide for Cursor |
+| | |
+|---|---|
+| [HRR deep dive](docs/hrr.md) | Compositional algebra, probe, reason, contradict |
+| [Trust scoring](docs/trust-scoring.md) | Feedback loop and contradiction workflow |
+| [Migrations](docs/migrations.md) | Versioned SQL files with rollback |
+| [Claude Code](docs/claude-code.md) | Setup and usage with Claude Code |
+| [Cursor](docs/cursor.md) | Setup and usage with Cursor |
 | [LangGraph](docs/langgraph.md) | Using Synapto as a LangGraph tool |
 | [Agno](docs/agno.md) | Using Synapto with Agno agents |
 
@@ -311,7 +214,7 @@ cd synapto
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 synapto init
-pytest
+pytest                          # 83 tests
 ```
 
 ## License
