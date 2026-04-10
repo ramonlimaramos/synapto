@@ -1,0 +1,117 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+
+    steps:
+      - name: check admin permission
+        uses: actions-cool/check-user-permission@v2
+        id: check
+        with:
+          require: admin
+          username: ${{ github.triggering_actor }}
+
+      - name: abort if not admin
+        if: steps.check.outputs.require-result != 'true'
+        run: |
+          echo "error: only repo admins can create releases"
+          echo "actor: ${{ github.triggering_actor }}"
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install build tools
+        run: pip install build tomli tomli-w
+
+      - name: bump version
+        id: bump
+        run: |
+          python - <<'PYEOF'
+          import tomli, tomli_w, re, os
+
+          bump_type = "${{ inputs.bump_type }}"
+
+          # read current version from pyproject.toml
+          with open("pyproject.toml", "rb") as f:
+              data = tomli.load(f)
+
+          current = data["project"]["version"]
+          major, minor, patch = map(int, current.split("."))
+
+          if bump_type == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump_type == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+
+          new_version = f"{major}.{minor}.{patch}"
+
+          # update pyproject.toml
+          data["project"]["version"] = new_version
+          with open("pyproject.toml", "wb") as f:
+              tomli_w.dump(data, f)
+
+          # update __init__.py
+          init_path = "src/synapto/__init__.py"
+          with open(init_path) as f:
+              content = f.read()
+          content = re.sub(r'__version__ = "[^"]+"', f'__version__ = "{new_version}"', content)
+          with open(init_path, "w") as f:
+              f.write(content)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={new_version}\n")
+              f.write(f"previous={current}\n")
+
+          print(f"bumped {current} -> {new_version}")
+          PYEOF
+
+      - name: build package
+        run: python -m build
+
+      - name: commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/synapto/__init__.py
+          git commit -m "chore(synapto): bump version to ${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin main --tags
+
+      - name: publish to pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: create github release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.bump.outputs.version }}"
+          name: "v${{ steps.bump.outputs.version }}"
+          generate_release_notes: true
+          files: dist/*

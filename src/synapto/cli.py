@@ -31,9 +31,72 @@ def main(verbose: bool) -> None:
 
 @main.command()
 @click.option("--pg-dsn", envvar="SYNAPTO_PG_DSN", default="postgresql://localhost/synapto")
-def init(pg_dsn: str) -> None:
+@click.option("--interactive", "-i", is_flag=True, help="interactively configure synapto")
+def init(pg_dsn: str, interactive: bool) -> None:
     """Initialize the database — create tables, indexes, and extensions."""
-    from synapto.config import save_default_config
+    import tomli_w
+
+    from synapto.config import CONFIG_DIR, CONFIG_FILE, save_default_config
+
+    if interactive:
+        click.echo("synapto interactive setup\n")
+
+        pg_dsn = click.prompt("postgresql dsn", default=pg_dsn)
+        redis_url = click.prompt("redis url", default="redis://localhost:6379/0")
+        tenant = click.prompt("default tenant name", default="default")
+        provider = click.prompt(
+            "embedding provider",
+            default="sentence-transformers",
+            type=click.Choice(["sentence-transformers", "openai"], case_sensitive=False),
+        )
+
+        # write config
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "postgresql": {"dsn": pg_dsn},
+            "redis": {"url": redis_url},
+            "embeddings": {"provider": provider, "model": ""},
+            "defaults": {"tenant": tenant},
+            "decay": {"ephemeral_max_age_hours": 24, "purge_after_days": 30},
+            "server": {"name": "synapto"},
+        }
+        with open(CONFIG_FILE, "wb") as f:
+            tomli_w.dump(data, f)
+        click.echo(f"\nconfig written: {CONFIG_FILE}")
+
+        # run migrations
+        async def _init_interactive():
+            from synapto.db.migrations import get_schema_version, run_migrations
+            from synapto.db.postgres import PostgresClient
+
+            client = PostgresClient(pg_dsn)
+            await client.connect()
+            await run_migrations(client)
+            version = await get_schema_version(client)
+            await client.close()
+            return version
+
+        version = _run(_init_interactive())
+        click.echo(f"database initialized (schema v{version})")
+
+        # check embedding model availability
+        click.echo(f"loading embedding model ({provider})...")
+        from synapto.embeddings.registry import get_provider
+
+        p = get_provider(provider)
+        click.echo(f"embedding model ready: {p.name} (dim={p.dimension})")
+
+        # summary
+        click.echo("\n--- setup complete ---")
+        click.echo(f"  postgresql: {pg_dsn}")
+        click.echo(f"  redis:      {redis_url}")
+        click.echo(f"  tenant:     {tenant}")
+        click.echo(f"  embeddings: {p.name}")
+        click.echo(f"  config:     {CONFIG_FILE}")
+        return
+
+    config_path = save_default_config()
+    click.echo(f"config: {config_path}")
 
     async def _init():
         from synapto.db.migrations import get_schema_version, run_migrations
@@ -51,9 +114,6 @@ def init(pg_dsn: str) -> None:
         click.echo(f"synapto database initialized (schema v{version})")
 
         await client.close()
-
-    config_path = save_default_config()
-    click.echo(f"config: {config_path}")
 
     _run(_init())
 
@@ -147,6 +207,116 @@ def stats(tenant: str | None) -> None:
         await client.close()
 
     _run(_stats())
+
+
+@main.command()
+def doctor() -> None:
+    """Check system health — PostgreSQL, Redis, embeddings, config, and schema."""
+
+    def _green(msg: str) -> str:
+        return click.style(f"[ok]   {msg}", fg="green")
+
+    def _warn(msg: str, fix: str) -> str:
+        return click.style(f"[warn] {msg}", fg="yellow") + f"\n       fix: {fix}"
+
+    def _fail(msg: str, fix: str) -> str:
+        return click.style(f"[fail] {msg}", fg="red") + f"\n       fix: {fix}"
+
+    from synapto.config import CONFIG_FILE, load_config
+
+    click.echo("synapto doctor\n")
+
+    # 1. config file
+    if CONFIG_FILE.exists():
+        click.echo(_green(f"config file exists: {CONFIG_FILE}"))
+    else:
+        click.echo(_warn(f"config file missing: {CONFIG_FILE}", "run: synapto init"))
+
+    config = load_config()
+
+    # 2. postgresql connectivity
+    async def _check_pg():
+        from synapto.db.postgres import PostgresClient
+
+        client = PostgresClient(config.pg_dsn, min_size=1, max_size=1)
+        await client.connect()
+        row = await client.execute_one("SELECT version() AS v;")
+        await client.close()
+        return row["v"]
+
+    try:
+        pg_version = _run(_check_pg())
+        short = pg_version.split(",")[0] if pg_version else "unknown"
+        click.echo(_green(f"postgresql: {short}"))
+    except Exception as e:
+        click.echo(_fail(f"postgresql: {e}", f"check connection to {config.pg_dsn}"))
+
+    # 3. pgvector extension
+    async def _check_pgvector():
+        from synapto.db.postgres import PostgresClient
+
+        client = PostgresClient(config.pg_dsn, min_size=1, max_size=1)
+        await client.connect()
+        row = await client.execute_one(
+            "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
+        )
+        await client.close()
+        return row
+
+    try:
+        ext_row = _run(_check_pgvector())
+        if ext_row:
+            click.echo(_green(f"pgvector extension: v{ext_row['extversion']}"))
+        else:
+            click.echo(_warn("pgvector extension not installed", "run: CREATE EXTENSION vector;"))
+    except Exception as e:
+        click.echo(_fail(f"pgvector check: {e}", "ensure postgresql is reachable"))
+
+    # 4. redis connectivity
+    async def _check_redis():
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(config.redis_url, decode_responses=True)
+        info = await client.info("server")
+        await client.aclose()
+        return info.get("redis_version", "unknown")
+
+    try:
+        redis_ver = _run(_check_redis())
+        click.echo(_green(f"redis: v{redis_ver}"))
+    except Exception as e:
+        click.echo(_fail(f"redis: {e}", f"check connection to {config.redis_url}"))
+
+    # 5. embedding model
+    try:
+        from synapto.embeddings.registry import get_provider
+
+        provider = get_provider(config.embedding_provider)
+        click.echo(_green(f"embedding model: {provider.name} (dim={provider.dimension})"))
+    except Exception as e:
+        click.echo(_fail(f"embedding model: {e}", "check embedding provider config"))
+
+    # 6. schema version
+    async def _check_schema():
+        from synapto.db.migrations import get_schema_version
+        from synapto.db.postgres import PostgresClient
+
+        client = PostgresClient(config.pg_dsn, min_size=1, max_size=1)
+        await client.connect()
+        version = await get_schema_version(client)
+        await client.close()
+        return version
+
+    try:
+        schema_v = _run(_check_schema())
+        if schema_v:
+            click.echo(_green(f"schema version: v{schema_v}"))
+        else:
+            click.echo(_warn("schema not initialized", "run: synapto init"))
+    except Exception:
+        click.echo(_warn("schema check skipped (postgresql unreachable)", "fix postgresql first"))
+
+    click.echo()
 
 
 @main.command(name="export")

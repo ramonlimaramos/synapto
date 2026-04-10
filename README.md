@@ -1,8 +1,33 @@
 # Synapto
 
+[![CI](https://github.com/ramonlimaramos/synapto/actions/workflows/ci.yml/badge.svg)](https://github.com/ramonlimaramos/synapto/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/synapto.svg)](https://pypi.org/project/synapto/)
+
 Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP.
 
 Synapto replaces flat-file memory (like `MEMORY.md`) with a hybrid vector + graph database that gives any MCP-compatible AI agent or framework a production-grade memory layer.
+
+## Try it in 60 seconds
+
+**Docker** (recommended):
+
+```bash
+git clone https://github.com/ramonlimaramos/synapto.git && cd synapto
+docker compose up -d
+docker compose exec synapto synapto search "hello world"
+```
+
+**Local**:
+
+```bash
+pip install synapto
+createdb synapto && psql -d synapto -c "CREATE EXTENSION vector;"
+synapto init
+synapto import MEMORY.md --format markdown
+synapto search "kafka message flow"
+```
 
 ## Features
 
