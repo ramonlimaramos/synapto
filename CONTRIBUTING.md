@@ -2,30 +2,12 @@
 
 Thanks for your interest in contributing to Synapto! This guide covers everything you need to get started.
 
-## Development Setup
-
-```bash
-git clone https://github.com/ramonlimaramos/synapto.git
-cd synapto
-make dev          # creates venv + installs with dev extras
-make init         # initializes the database
-make test         # runs the test suite
-```
-
-Or manually:
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-synapto init
-pytest
-```
-
-### Prerequisites
+## Prerequisites
 
 - Python 3.11+
 - PostgreSQL 14+ with [pgvector](https://github.com/pgvector/pgvector)
 - Redis 7+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 Or just use Docker:
 
@@ -33,17 +15,46 @@ Or just use Docker:
 make docker-up    # starts postgres + redis + synapto
 ```
 
+## Development Setup
+
+```bash
+git clone https://github.com/ramonlimaramos/synapto.git
+cd synapto
+
+# install with dev dependencies
+uv sync --extra dev
+# or: pip install -e ".[dev]"
+
+# initialize the database
+uv run synapto init
+```
+
 ## Running Tests
 
 ```bash
-make test         # run all tests
-make lint         # check code style
-make format       # auto-format code
+# full suite
+uv run pytest tests/ -v
+
+# with coverage
+uv run pytest tests/ -v --cov=synapto --cov-report=term-missing
+
+# specific file
+uv run pytest tests/unit/test_hrr.py -v
 ```
 
-Tests require a running PostgreSQL (with pgvector) and Redis instance. The test suite uses a dedicated Redis database (db 1) to avoid conflicts.
+Tests require a running PostgreSQL (with pgvector) and Redis instance. Connection strings are read from environment variables:
 
-## Code Style
+| Variable | Default |
+|----------|---------|
+| `SYNAPTO_PG_DSN` | `postgresql://localhost/synapto` |
+| `SYNAPTO_REDIS_URL` | `redis://localhost:6379/1` |
+
+## Linting
+
+```bash
+uv run ruff check src/ tests/       # check code style
+uv run ruff format --check src/ tests/  # check formatting
+```
 
 We use [ruff](https://docs.astral.sh/ruff/) for linting and formatting:
 
@@ -51,7 +62,11 @@ We use [ruff](https://docs.astral.sh/ruff/) for linting and formatting:
 - Target: Python 3.11+
 - Rules: E, F, I, N, W, UP
 
-Run `make lint` before submitting a PR. CI will reject PRs that fail lint checks.
+## Code Style
+
+- No ORM — raw SQL only (psycopg3)
+- Type hints on all public functions
+- Tests mirror the `src/` directory structure under `tests/unit/`
 
 ## Commit Format
 
@@ -69,14 +84,20 @@ chore(synapto): bump dependency versions
 
 1. Fork the repository and create a branch from `main`
 2. Make your changes, including tests for new functionality
-3. Run `make lint` and `make test` to verify everything passes
+3. Run `ruff check` and `pytest` to verify everything passes
 4. Commit with the format described above
 5. Open a PR against `main` with a clear description of what and why
 
+### PR Requirements
+
+- All CI checks must pass (lint + tests on Python 3.11/3.12/3.13)
+- At least one maintainer approval is required
+- Keep PRs focused — one feature or fix per PR
+
 ### PR Checklist
 
-- [ ] Tests pass (`make test`)
-- [ ] Lint passes (`make lint`)
+- [ ] Tests pass (`uv run pytest tests/`)
+- [ ] Lint passes (`uv run ruff check src/ tests/`)
 - [ ] New features include tests
 - [ ] Commit messages follow the format above
 - [ ] No new dependencies added without discussion
@@ -85,11 +106,6 @@ chore(synapto): bump dependency versions
 
 Releases are published to PyPI and are **admin-only**. They are triggered manually via the GitHub Actions release workflow (`workflow_dispatch`). Contributors do not need to worry about versioning or publishing — maintainers handle this.
 
-The release process:
-1. An admin triggers the release workflow, selecting a version bump type (patch/minor/major)
-2. The workflow bumps the version, builds the package, publishes to PyPI, and creates a GitHub Release
-3. Only users with admin permission on the repository can trigger this workflow
-
 ## Questions?
 
-Open an issue or start a discussion on the repository.
+Open an [issue](https://github.com/ramonlimaramos/synapto/issues) or start a discussion on the repository.
