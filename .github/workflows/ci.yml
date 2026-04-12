@@ -41,27 +41,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: set up python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
-      - name: cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+      - name: set up python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: install dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: lint
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
 
       - name: test
         env:
           SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
-        run: pytest tests/ -v --cov=synapto --cov-report=term-missing
+        run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing
