@@ -41,27 +41,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
       - name: set up python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
-      - name: cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+      - name: install dependencies (cpu-only torch for ci)
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        env:
+          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
-      - name: install dependencies
-        run: pip install -e ".[dev]"
+      - name: create pgvector extension
+        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
       - name: lint
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
 
       - name: test
         env:
           SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
-        run: pytest tests/ -v --cov=synapto --cov-report=term-missing
+        run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing
