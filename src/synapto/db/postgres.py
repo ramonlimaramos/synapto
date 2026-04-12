@@ -40,9 +40,9 @@ class PostgresClient:
     async def _configure_connection(conn: psycopg.AsyncConnection) -> None:
         await register_vector_async(conn)
 
-    async def close(self) -> None:
+    async def close(self, timeout: float = 5.0) -> None:
         if self._pool:
-            await self._pool.close()
+            await self._pool.close(timeout=timeout)
             logger.info("synapto postgres pool closed")
 
     @asynccontextmanager
