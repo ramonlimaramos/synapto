@@ -16,18 +16,14 @@ from synapto.db.redis_cache import RedisCache
 from synapto.decay.maintenance import cleanup_ephemeral, update_decay_scores
 from synapto.embeddings.base import EmbeddingProvider
 from synapto.embeddings.registry import get_provider
-from synapto.graph.entities import (
-    create_entity,
-    extract_entities_from_text,
-    link_memory_to_entity,
-)
-from synapto.graph.entities import (
-    list_entities as list_entities_db,
-)
+from synapto.graph.entities import create_entity, extract_entities_from_text
 from synapto.graph.relations import create_relation_by_name
 from synapto.hrr.banks import rebuild_bank
 from synapto.hrr.core import DEFAULT_DIM, encode_fact, phases_to_bytes
 from synapto.hrr.retrieval import contradict as hrr_contradict
+from synapto.repositories.entities import EntityRepository
+from synapto.repositories.memories import MemoryRepository
+from synapto.repositories.relations import RelationRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
 
@@ -115,47 +111,33 @@ async def remember(
         metadata: optional JSON metadata
         extract_entities: auto-extract and link entities from content
     """
-    from psycopg.types.json import Jsonb
-
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
+    repo = MemoryRepository(pg)
 
     embedding = await provider.embed_one(content)
-
-    row = await pg.execute_one(
-        """
-        INSERT INTO memories (content, summary, embedding, embedding_dim, type, tenant, depth_layer, metadata)
-        VALUES (%(content)s, %(summary)s, %(emb)s, %(dim)s, %(type)s, %(tenant)s, %(depth)s, %(meta)s)
-        RETURNING id;
-        """,
-        {
-            "content": content,
-            "summary": summary,
-            "emb": embedding,
-            "dim": provider.dimension,
-            "type": memory_type,
-            "tenant": t,
-            "depth": depth_layer,
-            "meta": Jsonb(metadata or {}),
-        },
+    memory_id = await repo.create(
+        content=content,
+        embedding=embedding,
+        embedding_dim=provider.dimension,
+        memory_type=memory_type,
+        tenant=t,
+        depth_layer=depth_layer,
+        summary=summary,
+        metadata=metadata,
     )
-    memory_id = row["id"]
 
     entity_names = []
     if extract_entities:
         entity_names = extract_entities_from_text(content)
         for entity_name in entity_names:
             eid = await create_entity(pg, entity_name, "concept", t, provider=provider)
-            await link_memory_to_entity(pg, memory_id, eid)
+            await EntityRepository(pg).link_memory(memory_id, eid)
 
-    # compute and store HRR vector for compositional search
     try:
         hrr_vec = encode_fact(content, entity_names)
-        await pg.execute(
-            "UPDATE memories SET hrr_vector = %s, hrr_dim = %s WHERE id = %s;",
-            (phases_to_bytes(hrr_vec), DEFAULT_DIM, memory_id),
-        )
+        await repo.update_hrr(memory_id, phases_to_bytes(hrr_vec), DEFAULT_DIM)
         bank_name = f"{t}:{memory_type}"
         await rebuild_bank(pg, bank_name, t, type_filter=memory_type)
     except Exception as e:
@@ -239,10 +221,8 @@ async def forget(memory_id: str) -> str:
         memory_id: UUID of the memory to delete
     """
     pg = _get_pg()
-    rows = await pg.execute(
-        "UPDATE memories SET deleted_at = now() WHERE id = %s AND deleted_at IS NULL RETURNING id;",
-        (memory_id,),
-    )
+    repo = MemoryRepository(pg)
+    rows = await repo.soft_delete(memory_id)
     if rows:
         cache = _get_cache()
         await cache.invalidate_memory(UUID(memory_id))
@@ -298,8 +278,9 @@ async def list_entities_tool(
     """
     pg = _get_pg()
     t = tenant or _config.default_tenant
+    repo = EntityRepository(pg)
 
-    entities = await list_entities_db(pg, t, entity_type=entity_type, limit=limit)
+    entities = await repo.list(t, entity_type=entity_type, limit=limit)
 
     if not entities:
         return f"no entities found in tenant '{t}'"
@@ -316,38 +297,21 @@ async def memory_stats(tenant: str | None = None) -> str:
         tenant: project/tenant scope (None = all tenants)
     """
     pg = _get_pg()
+    mem_repo = MemoryRepository(pg)
+    ent_repo = EntityRepository(pg)
+    rel_repo = RelationRepository(pg)
 
-    tenant_filter = ""
-    params: tuple = ()
-    if tenant:
-        tenant_filter = "WHERE deleted_at IS NULL AND tenant = %s"
-        params = (tenant,)
-    else:
-        tenant_filter = "WHERE deleted_at IS NULL"
-
-    by_type = await pg.execute(
-        f"SELECT type, count(*) as cnt FROM memories {tenant_filter} GROUP BY type ORDER BY cnt DESC;",
-        params,
-    )
-    by_depth = await pg.execute(
-        f"SELECT depth_layer, count(*) as cnt FROM memories {tenant_filter} GROUP BY depth_layer ORDER BY cnt DESC;",
-        params,
-    )
-    by_tenant = await pg.execute(
-        f"SELECT tenant, count(*) as cnt FROM memories {tenant_filter} GROUP BY tenant ORDER BY cnt DESC;",
-        params,
-    )
-    entity_count = await pg.execute_one(
-        "SELECT count(*) as cnt FROM entities" + (" WHERE tenant = %s" if tenant else ""),
-        (tenant,) if tenant else None,
-    )
-    relation_count = await pg.execute_one("SELECT count(*) as cnt FROM relations;")
+    by_type = await mem_repo.count_by_type(tenant)
+    by_depth = await mem_repo.count_by_depth(tenant)
+    by_tenant = await mem_repo.count_by_tenant(tenant)
+    entity_count = await ent_repo.count(tenant)
+    relation_count = await rel_repo.count()
 
     lines = ["=== synapto memory stats ==="]
     total = sum(r["cnt"] for r in by_type)
     lines.append(f"total memories: {total}")
-    lines.append(f"total entities: {entity_count['cnt']}")
-    lines.append(f"total relations: {relation_count['cnt']}")
+    lines.append(f"total entities: {entity_count}")
+    lines.append(f"total relations: {relation_count}")
     lines.append("\nby type:")
     for r in by_type:
         lines.append(f"  {r['type']}: {r['cnt']}")
@@ -383,17 +347,10 @@ async def trust_feedback(memory_id: str, helpful: bool) -> str:
         helpful: whether the memory was helpful
     """
     pg = _get_pg()
+    repo = MemoryRepository(pg)
     delta = 0.05 if helpful else -0.10
 
-    rows = await pg.execute(
-        """
-        UPDATE memories
-        SET trust_score = GREATEST(0.0, LEAST(1.0, trust_score + %s))
-        WHERE id = %s AND deleted_at IS NULL
-        RETURNING id, trust_score;
-        """,
-        (delta, memory_id),
-    )
+    rows = await repo.update_trust(memory_id, delta)
     if rows:
         new_score = rows[0]["trust_score"]
         direction = "boosted" if helpful else "penalized"

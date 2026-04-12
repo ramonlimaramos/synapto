@@ -14,6 +14,8 @@ import logging
 
 from synapto.db.postgres import PostgresClient
 from synapto.hrr.core import DEFAULT_DIM, bundle, bytes_to_phases, phases_to_bytes, snr_estimate
+from synapto.repositories.banks import BankRepository
+from synapto.repositories.memories import MemoryRepository
 
 logger = logging.getLogger("synapto.hrr.banks")
 
@@ -30,25 +32,13 @@ async def rebuild_bank(
 
     Returns the number of vectors bundled. Deletes the bank if no vectors found.
     """
-    where = ["deleted_at IS NULL", "tenant = %s", "hrr_vector IS NOT NULL"]
-    params: list = [tenant]
+    mem_repo = MemoryRepository(client)
+    bank_repo = BankRepository(client)
 
-    if type_filter:
-        where.append("type = %s")
-        params.append(type_filter)
-    if depth_filter:
-        where.append("depth_layer = %s")
-        params.append(depth_filter)
-
-    rows = await client.execute(
-        f"SELECT hrr_vector FROM memories WHERE {' AND '.join(where)};",
-        tuple(params),
-    )
+    rows = await mem_repo.select_hrr_vectors(tenant, type_filter, depth_filter)
 
     if not rows:
-        await client.execute(
-            "DELETE FROM memory_banks WHERE bank_name = %s;", (bank_name,)
-        )
+        await bank_repo.delete(bank_name)
         return 0
 
     vectors = [bytes_to_phases(row["hrr_vector"]) for row in rows]
@@ -57,18 +47,7 @@ async def rebuild_bank(
 
     snr_estimate(dim, fact_count)
 
-    await client.execute(
-        """
-        INSERT INTO memory_banks (bank_name, vector, dim, fact_count, updated_at)
-        VALUES (%s, %s, %s, %s, now())
-        ON CONFLICT (bank_name) DO UPDATE SET
-            vector = EXCLUDED.vector,
-            dim = EXCLUDED.dim,
-            fact_count = EXCLUDED.fact_count,
-            updated_at = now();
-        """,
-        (bank_name, phases_to_bytes(bank_vector), dim, fact_count),
-    )
+    await bank_repo.upsert(bank_name, phases_to_bytes(bank_vector), dim, fact_count)
 
     logger.info("rebuilt bank '%s': %d vectors, dim=%d", bank_name, fact_count, dim)
     return fact_count
@@ -80,21 +59,16 @@ async def rebuild_tenant_banks(
     dim: int = DEFAULT_DIM,
 ) -> int:
     """Rebuild all banks for a tenant (one per type)."""
-    rows = await client.execute(
-        "SELECT DISTINCT type FROM memories WHERE tenant = %s AND deleted_at IS NULL;",
-        (tenant,),
-    )
+    bank_repo = BankRepository(client)
+    types = await bank_repo.list_tenant_types(tenant)
     total = 0
-    for row in rows:
-        bank_name = f"{tenant}:{row['type']}"
-        count = await rebuild_bank(client, bank_name, tenant, dim, type_filter=row["type"])
+    for mem_type in types:
+        bank_name = f"{tenant}:{mem_type}"
+        count = await rebuild_bank(client, bank_name, tenant, dim, type_filter=mem_type)
         total += count
     return total
 
 
 async def get_bank_vector(client: PostgresClient, bank_name: str) -> bytes | None:
     """Retrieve a memory bank's bundled vector."""
-    row = await client.execute_one(
-        "SELECT vector FROM memory_banks WHERE bank_name = %s;", (bank_name,)
-    )
-    return row["vector"] if row else None
+    return await BankRepository(client).get_vector(bank_name)
