@@ -54,6 +54,9 @@ jobs:
         env:
           UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
+      - name: create pgvector extension
+        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
       - name: lint
         run: uv run ruff check src/ tests/
 

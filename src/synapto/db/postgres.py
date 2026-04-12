@@ -38,7 +38,10 @@ class PostgresClient:
 
     @staticmethod
     async def _configure_connection(conn: psycopg.AsyncConnection) -> None:
-        await register_vector_async(conn)
+        try:
+            await register_vector_async(conn)
+        except Exception:
+            logger.debug("pgvector extension not yet available — will register after migrations")
 
     async def close(self, timeout: float = 5.0) -> None:
         if self._pool:
