@@ -8,9 +8,16 @@ import pytest
 
 from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
+from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
 
 DSN = os.environ.get("SYNAPTO_PG_DSN", "postgresql://localhost/synapto")
 REDIS_URL = os.environ.get("SYNAPTO_REDIS_URL", "redis://localhost:6379/1")
+
+
+@pytest.fixture(scope="session")
+def provider():
+    """Load the sentence-transformer model once per test session."""
+    return SentenceTransformerProvider()
 
 
 @pytest.fixture

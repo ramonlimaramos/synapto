@@ -49,8 +49,10 @@ jobs:
       - name: set up python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: install dependencies
+      - name: install dependencies (cpu-only torch for ci)
         run: uv sync --extra dev --python ${{ matrix.python-version }}
+        env:
+          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
       - name: lint
         run: uv run ruff check src/ tests/

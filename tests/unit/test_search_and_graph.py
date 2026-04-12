@@ -7,7 +7,6 @@ from uuid import UUID
 import pytest
 
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
-from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
 from synapto.graph.entities import (
     create_entity,
     extract_entities_from_text,
@@ -40,11 +39,6 @@ async def pg(pg):
         (TENANT,),
     )
     await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
-
-
-@pytest.fixture
-def provider():
-    return SentenceTransformerProvider()
 
 
 async def _insert_memory(pg, provider, content, depth_layer="working", mem_type="general"):

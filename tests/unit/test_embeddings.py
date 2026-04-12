@@ -10,10 +10,6 @@ from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
 
 
 class TestSentenceTransformerProvider:
-    @pytest.fixture
-    def provider(self):
-        return SentenceTransformerProvider()
-
     async def test_embed_returns_correct_dimension(self, provider):
         vectors = await provider.embed(["hello world"])
         assert len(vectors) == 1
