@@ -22,7 +22,7 @@ def provider():
 
 @pytest.fixture
 async def pg():
-    client = PostgresClient(DSN, min_size=0, max_size=2)
+    client = PostgresClient(DSN, min_size=1, max_size=2)
     await client.connect()
     yield client
     await client.close()
