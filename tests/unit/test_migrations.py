@@ -17,17 +17,6 @@ from synapto.db.migrations import (
     migrate_up,
     run_migrations,
 )
-from synapto.db.postgres import PostgresClient
-
-DSN = "postgresql://localhost/synapto"
-
-
-@pytest.fixture
-async def pg():
-    client = PostgresClient(DSN, min_size=1, max_size=2)
-    await client.connect()
-    yield client
-    await client.close()
 
 
 @pytest.fixture

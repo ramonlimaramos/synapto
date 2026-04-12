@@ -7,7 +7,6 @@ from uuid import UUID
 import pytest
 
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
-from synapto.db.postgres import PostgresClient
 from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
 from synapto.graph.entities import (
     create_entity,
@@ -23,28 +22,24 @@ from synapto.graph.relations import (
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search, vector_search
 
-DSN = "postgresql://localhost/synapto"
 TENANT = "test_search"
 
 
 @pytest.fixture
-async def pg():
-    client = PostgresClient(DSN, min_size=1, max_size=2)
-    await client.connect()
-    await run_migrations(client)
-    yield client
-    # cleanup test data
-    await client.execute(
+async def pg(pg):
+    """Extend the shared pg fixture with migrations and test-tenant cleanup."""
+    await run_migrations(pg)
+    yield pg
+    await pg.execute(
         "DELETE FROM memory_entities WHERE memory_id IN (SELECT id FROM memories WHERE tenant = %s);",
         (TENANT,),
     )
-    await client.execute("DELETE FROM memories WHERE tenant = %s;", (TENANT,))
-    await client.execute(
+    await pg.execute("DELETE FROM memories WHERE tenant = %s;", (TENANT,))
+    await pg.execute(
         "DELETE FROM relations WHERE from_entity_id IN (SELECT id FROM entities WHERE tenant = %s);",
         (TENANT,),
     )
-    await client.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
-    await client.close()
+    await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
 
 
 @pytest.fixture
