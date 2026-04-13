@@ -4,10 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       bump_type:
-        description: "version bump type"
+        description: "version bump type (use 'current' to publish without bumping)"
         required: true
         type: choice
         options:
+          - current
           - patch
           - minor
           - major
@@ -61,29 +62,31 @@ jobs:
               data = tomli.load(f)
 
           current = data["project"]["version"]
-          major, minor, patch = map(int, current.split("."))
 
-          if bump_type == "major":
-              major, minor, patch = major + 1, 0, 0
-          elif bump_type == "minor":
-              minor, patch = minor + 1, 0
+          if bump_type == "current":
+              new_version = current
           else:
-              patch += 1
+              major, minor, patch = map(int, current.split("."))
+              if bump_type == "major":
+                  major, minor, patch = major + 1, 0, 0
+              elif bump_type == "minor":
+                  minor, patch = minor + 1, 0
+              else:
+                  patch += 1
+              new_version = f"{major}.{minor}.{patch}"
 
-          new_version = f"{major}.{minor}.{patch}"
+              # update pyproject.toml
+              data["project"]["version"] = new_version
+              with open("pyproject.toml", "wb") as f:
+                  tomli_w.dump(data, f)
 
-          # update pyproject.toml
-          data["project"]["version"] = new_version
-          with open("pyproject.toml", "wb") as f:
-              tomli_w.dump(data, f)
-
-          # update __init__.py
-          init_path = "src/synapto/__init__.py"
-          with open(init_path) as f:
-              content = f.read()
-          content = re.sub(r'__version__ = "[^"]+"', f'__version__ = "{new_version}"', content)
-          with open(init_path, "w") as f:
-              f.write(content)
+              # update __init__.py
+              init_path = "src/synapto/__init__.py"
+              with open(init_path) as f:
+                  content = f.read()
+              content = re.sub(r'__version__ = "[^"]+"', f'__version__ = "{new_version}"', content)
+              with open(init_path, "w") as f:
+                  f.write(content)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"version={new_version}\n")
@@ -96,13 +99,20 @@ jobs:
         run: uv run python -m build
 
       - name: commit version bump
+        if: inputs.bump_type != 'current'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml src/synapto/__init__.py
           git commit -m "chore(synapto): bump version to ${{ steps.bump.outputs.version }}"
+          git push origin main
+
+      - name: create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ steps.bump.outputs.version }}"
-          git push origin main --tags
+          git push origin "v${{ steps.bump.outputs.version }}"
 
       - name: publish to pypi
         uses: pypa/gh-action-pypi-publish@release/v1
