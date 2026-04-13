@@ -60,6 +60,12 @@ jobs:
       - name: lint
         run: uv run ruff check src/ tests/
 
+      - name: security scan (bandit)
+        run: uv run bandit -r src/synapto/ -c pyproject.toml
+
+      - name: dependency audit (pip-audit)
+        run: uv run pip-audit
+
       - name: test
         env:
           SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto

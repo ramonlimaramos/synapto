@@ -137,18 +137,20 @@ async def hybrid_search(
     dim = provider.dimension
 
     depth_filter = ""
-    if depth_layer:
-        depth_filter = f"AND depth_layer = '{depth_layer}'"
-
-    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
-
-    rows = await client.execute(sql, {
+    params: dict[str, Any] = {
         "embedding": embedding,
         "query": query,
         "tenant": tenant,
         "rrf_k": rrf_k,
         "limit": limit * 2,  # fetch extra for HRR reranking
-    })
+    }
+    if depth_layer:
+        depth_filter = "AND depth_layer = %(depth_layer)s"
+        params["depth_layer"] = depth_layer
+
+    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
+
+    rows = await client.execute(sql, params)
 
     # apply HRR boost and rerank
     scored_rows = []
@@ -208,16 +210,18 @@ async def vector_search(
     dim = provider.dimension
 
     depth_filter = ""
-    if depth_layer:
-        depth_filter = f"AND depth_layer = '{depth_layer}'"
-
-    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
-
-    rows = await client.execute(sql, {
+    params: dict[str, Any] = {
         "embedding": embedding,
         "tenant": tenant,
         "limit": limit,
-    })
+    }
+    if depth_layer:
+        depth_filter = "AND depth_layer = %(depth_layer)s"
+        params["depth_layer"] = depth_layer
+
+    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
+
+    rows = await client.execute(sql, params)
 
     return [
         SearchResult(

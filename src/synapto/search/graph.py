@@ -112,18 +112,19 @@ async def traverse(
         bidirectional: traverse both incoming and outgoing edges
     """
     relation_filter = ""
+    params: dict[str, Any] = {
+        "entity_name": entity_name,
+        "tenant": tenant,
+        "max_hops": max_hops,
+    }
     if relation_types:
-        types_str = ", ".join(f"'{t}'" for t in relation_types)
-        relation_filter = f"AND r.relation_type IN ({types_str})"
+        relation_filter = "AND r.relation_type = ANY(%(relation_types)s)"
+        params["relation_types"] = relation_types
 
     template = TRAVERSE_BOTH_DIRECTIONS_QUERY if bidirectional else TRAVERSE_QUERY
     sql = template.format(relation_filter=relation_filter)
 
-    rows = await client.execute(sql, {
-        "entity_name": entity_name,
-        "tenant": tenant,
-        "max_hops": max_hops,
-    })
+    rows = await client.execute(sql, params)
 
     return [
         GraphNode(

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install dev test lint format serve init doctor docker-up docker-down clean
+.PHONY: help install dev test lint format security audit serve init doctor docker-up docker-down clean
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -20,6 +20,12 @@ lint: ## run ruff linter
 
 format: ## format code with ruff
 	uv run ruff format src/ tests/
+
+security: ## run bandit security scan
+	uv run bandit -r src/synapto/ -c pyproject.toml
+
+audit: ## audit dependencies for known vulnerabilities
+	uv run pip-audit
 
 serve: ## start the mcp server (stdio)
 	uv run synapto serve
