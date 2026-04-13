@@ -7,8 +7,54 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: set up python
+        run: uv python install 3.13
+
+      - name: install dependencies
+        run: uv sync --extra dev --python 3.13
+        env:
+          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+      - name: ruff check
+        run: uv run ruff check src/ tests/
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: set up python
+        run: uv python install 3.13
+
+      - name: install dependencies
+        run: uv sync --extra dev --python 3.13
+        env:
+          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+      - name: bandit security scan
+        run: uv run bandit -r src/synapto/ -c pyproject.toml
+
+      - name: pip-audit dependency scan
+        run: uv run pip-audit
+
   test:
     runs-on: ubuntu-latest
+    needs: [lint, security]
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -56,15 +102,6 @@ jobs:
 
       - name: create pgvector extension
         run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-
-      - name: lint
-        run: uv run ruff check src/ tests/
-
-      - name: security scan (bandit)
-        run: uv run bandit -r src/synapto/ -c pyproject.toml
-
-      - name: dependency audit (pip-audit)
-        run: uv run pip-audit
 
       - name: test
         env:
