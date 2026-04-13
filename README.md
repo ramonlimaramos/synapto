@@ -67,14 +67,16 @@ synapto init            # or: synapto init --interactive
 
 ### Connect to your agent
 
-**Claude Code** (`~/.claude/settings.json`):
+The recommended way is `uvx` — it auto-updates on every launch, no manual upgrades:
+
+**Claude Code** (`~/.claude/.mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "synapto": {
-      "command": "synapto",
-      "args": ["serve"]
+      "command": "uvx",
+      "args": ["synapto", "serve"]
     }
   }
 }
@@ -86,12 +88,14 @@ synapto init            # or: synapto init --interactive
 {
   "mcpServers": {
     "synapto": {
-      "command": "synapto",
-      "args": ["serve"]
+      "command": "uvx",
+      "args": ["synapto", "serve"]
     }
   }
 }
 ```
+
+> **Why uvx?** It resolves the latest version from PyPI each time your agent starts. No `pip install --upgrade` needed — you always get the latest features and fixes automatically.
 
 Restart your agent. Synapto tools appear automatically.
 

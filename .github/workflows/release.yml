@@ -33,7 +33,6 @@ jobs:
         if: steps.check.outputs.require-result != 'true'
         run: |
           echo "error: only repo admins can create releases"
-          echo "actor: ${{ github.triggering_actor }}"
           exit 1
 
       - uses: actions/checkout@v4
@@ -41,13 +40,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: set up python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+        run: uv python install 3.13
 
       - name: install build tools
-        run: pip install build tomli tomli-w
+        run: uv sync --extra dev --python 3.13
 
       - name: bump version
         id: bump
@@ -57,7 +57,6 @@ jobs:
 
           bump_type = "${{ inputs.bump_type }}"
 
-          # read current version from pyproject.toml
           with open("pyproject.toml", "rb") as f:
               data = tomli.load(f)
 
@@ -94,7 +93,7 @@ jobs:
           PYEOF
 
       - name: build package
-        run: python -m build
+        run: uv run python -m build
 
       - name: commit version bump
         run: |
@@ -113,5 +112,19 @@ jobs:
         with:
           tag_name: "v${{ steps.bump.outputs.version }}"
           name: "v${{ steps.bump.outputs.version }}"
-          generate_release_notes: true
+          body: |
+            ## what's changed
+
+            see [CHANGELOG.md](https://github.com/ramonlimaramos/synapto/blob/main/CHANGELOG.md) for details.
+
+            ### install / upgrade
+
+            ```bash
+            pip install synapto==${{ steps.bump.outputs.version }}
+            ```
+
+            or with auto-updates (recommended):
+            ```json
+            { "command": "uvx", "args": ["synapto", "serve"] }
+            ```
           files: dist/*
