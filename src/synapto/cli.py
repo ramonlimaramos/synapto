@@ -521,11 +521,11 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
     _run(_import())
 
 
-def _detect_mcp_clients() -> list[dict]:
+def _detect_mcp_clients(home=None) -> list[dict]:
     """Detect installed MCP clients and their config paths."""
     from pathlib import Path
 
-    home = Path.home()
+    home = home or Path.home()
     clients = []
 
     # claude code
