@@ -9,6 +9,7 @@ from uuid import UUID
 
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
+from synapto.repositories.memories import MemoryRepository
 
 logger = logging.getLogger("synapto.search.hybrid")
 
@@ -161,11 +162,7 @@ async def hybrid_search(
 
     if scored_rows:
         ids = [row["id"] for row, _ in scored_rows]
-        await client.execute(
-            "UPDATE memories SET accessed_at = now(), access_count = access_count + 1 "
-            "WHERE id = ANY(%s);",
-            (ids,),
-        )
+        await MemoryRepository(client).touch_accessed(ids)
 
     return [
         SearchResult(

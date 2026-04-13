@@ -7,10 +7,9 @@ import re
 from typing import Any
 from uuid import UUID
 
-from psycopg.types.json import Jsonb
-
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
+from synapto.repositories.entities import EntityRepository
 
 logger = logging.getLogger("synapto.graph.entities")
 
@@ -30,36 +29,21 @@ async def create_entity(
         embedding = await provider.embed_one(name)
         dim = provider.dimension
 
-    row = await client.execute_one(
-        """
-        INSERT INTO entities (name, entity_type, tenant, metadata, embedding, embedding_dim)
-        VALUES (%(name)s, %(type)s, %(tenant)s, %(meta)s, %(emb)s, %(dim)s)
-        ON CONFLICT (name, tenant) DO UPDATE SET
-            entity_type = EXCLUDED.entity_type,
-            metadata = entities.metadata || EXCLUDED.metadata,
-            embedding = COALESCE(EXCLUDED.embedding, entities.embedding),
-            embedding_dim = COALESCE(EXCLUDED.embedding_dim, entities.embedding_dim)
-        RETURNING id;
-        """,
-        {
-            "name": name,
-            "type": entity_type,
-            "tenant": tenant,
-            "meta": Jsonb(metadata or {}),
-            "emb": embedding,
-            "dim": dim,
-        },
+    repo = EntityRepository(client)
+    return await repo.upsert(
+        name=name,
+        entity_type=entity_type,
+        tenant=tenant,
+        metadata=metadata,
+        embedding=embedding,
+        embedding_dim=dim,
     )
-    return row["id"]
 
 
 async def get_entity(
     client: PostgresClient, name: str, tenant: str = "default"
 ) -> dict[str, Any] | None:
-    return await client.execute_one(
-        "SELECT * FROM entities WHERE name = %s AND tenant = %s;",
-        (name, tenant),
-    )
+    return await EntityRepository(client).get_by_name(name, tenant)
 
 
 async def list_entities(
@@ -68,52 +52,23 @@ async def list_entities(
     entity_type: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    if entity_type:
-        return await client.execute(
-            "SELECT id, name, entity_type, tenant, metadata, created_at "
-            "FROM entities WHERE tenant = %s AND entity_type = %s "
-            "ORDER BY name LIMIT %s;",
-            (tenant, entity_type, limit),
-        )
-    return await client.execute(
-        "SELECT id, name, entity_type, tenant, metadata, created_at "
-        "FROM entities WHERE tenant = %s ORDER BY name LIMIT %s;",
-        (tenant, limit),
-    )
+    return await EntityRepository(client).list(tenant, entity_type=entity_type, limit=limit)
 
 
 async def delete_entity(client: PostgresClient, name: str, tenant: str = "default") -> bool:
-    rows = await client.execute(
-        "DELETE FROM entities WHERE name = %s AND tenant = %s RETURNING id;",
-        (name, tenant),
-    )
-    return len(rows) > 0
+    return await EntityRepository(client).delete(name, tenant)
 
 
 async def link_memory_to_entity(
     client: PostgresClient, memory_id: UUID, entity_id: UUID
 ) -> None:
-    await client.execute(
-        """
-        INSERT INTO memory_entities (memory_id, entity_id)
-        VALUES (%s, %s) ON CONFLICT DO NOTHING;
-        """,
-        (memory_id, entity_id),
-    )
+    await EntityRepository(client).link_memory(memory_id, entity_id)
 
 
 async def get_memory_entities(
     client: PostgresClient, memory_id: UUID
 ) -> list[dict[str, Any]]:
-    return await client.execute(
-        """
-        SELECT e.id, e.name, e.entity_type
-        FROM entities e
-        JOIN memory_entities me ON me.entity_id = e.id
-        WHERE me.memory_id = %s;
-        """,
-        (memory_id,),
-    )
+    return await EntityRepository(client).get_memory_entities(memory_id)
 
 
 def extract_entities_from_text(text: str) -> list[str]:

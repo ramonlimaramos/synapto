@@ -26,6 +26,8 @@ from synapto.hrr.core import (
     similarity,
     unbind,
 )
+from synapto.repositories.entities import EntityRepository
+from synapto.repositories.memories import MemoryRepository
 
 logger = logging.getLogger("synapto.hrr.retrieval")
 
@@ -50,21 +52,7 @@ async def _fetch_hrr_memories(
     limit: int = 100,
 ) -> list[dict]:
     """Fetch memories that have HRR vectors."""
-    where = ["deleted_at IS NULL", "tenant = %s", "hrr_vector IS NOT NULL"]
-    params: list = [tenant]
-    if depth_layer:
-        where.append("depth_layer = %s")
-        params.append(depth_layer)
-
-    return await client.execute(
-        f"""
-        SELECT id, content, type, tenant, depth_layer, trust_score, hrr_vector
-        FROM memories
-        WHERE {' AND '.join(where)}
-        LIMIT %s;
-        """,
-        (*params, limit),
-    )
+    return await MemoryRepository(client).select_with_hrr(tenant, depth_layer, limit)
 
 
 def _score_to_unit(sim: float) -> float:
@@ -208,16 +196,10 @@ async def contradict(
 
     # build entity sets per memory via DB query - O(n) queries
     # using frozenset for O(1) intersection/union operations
+    ent_repo = EntityRepository(client)
     memory_entities: dict[UUID, frozenset[str]] = {}
     for row in rows:
-        ent_rows = await client.execute(
-            """
-            SELECT e.name FROM entities e
-            JOIN memory_entities me ON me.entity_id = e.id
-            WHERE me.memory_id = %s;
-            """,
-            (row["id"],),
-        )
+        ent_rows = await ent_repo.get_memory_entities(row["id"])
         memory_entities[row["id"]] = frozenset(r["name"].lower() for r in ent_rows)
 
     contradictions = []
