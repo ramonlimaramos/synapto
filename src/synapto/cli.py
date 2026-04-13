@@ -86,6 +86,9 @@ def init(pg_dsn: str, interactive: bool) -> None:
         p = get_provider(provider)
         click.echo(f"embedding model ready: {p.name} (dim={p.dimension})")
 
+        # offer to write MCP client config
+        _offer_mcp_config(tenant)
+
         # summary
         click.echo("\n--- setup complete ---")
         click.echo(f"  postgresql: {pg_dsn}")
@@ -516,6 +519,68 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
         await client.close()
 
     _run(_import())
+
+
+def _detect_mcp_clients(home=None) -> list[dict]:
+    """Detect installed MCP clients and their config paths."""
+    from pathlib import Path
+
+    home = home or Path.home()
+    clients = []
+
+    # claude code
+    for path in [home / ".claude" / ".mcp.json", home / ".claude" / "settings.json"]:
+        if path.parent.exists():
+            clients.append({"name": "Claude Code", "path": path, "key": "mcpServers"})
+            break
+
+    # cursor
+    cursor_path = home / ".cursor" / "mcp.json"
+    if cursor_path.parent.exists():
+        clients.append({"name": "Cursor", "path": cursor_path, "key": "mcpServers"})
+
+    return clients
+
+
+def _write_mcp_config(config_path, tenant: str = "default") -> None:
+    """Write synapto MCP config using uvx for auto-updates."""
+    from pathlib import Path
+
+    path = Path(config_path)
+    existing = {}
+    if path.exists():
+        with open(path) as f:
+            existing = json.loads(f.read())
+
+    servers = existing.get("mcpServers", {})
+    server_config: dict = {
+        "command": "uvx",
+        "args": ["synapto", "serve"],
+    }
+    if tenant != "default":
+        server_config["env"] = {"SYNAPTO_DEFAULT_TENANT": tenant}
+
+    servers["synapto"] = server_config
+    existing["mcpServers"] = servers
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(json.dumps(existing, indent=2))
+
+
+def _offer_mcp_config(tenant: str = "default") -> None:
+    """Detect MCP clients and offer to write uvx-based config."""
+    clients = _detect_mcp_clients()
+    if not clients:
+        return
+
+    click.echo("\n--- mcp client configuration ---")
+    for client in clients:
+        if click.confirm(f"configure {client['name']} with auto-update (uvx)?", default=True):
+            _write_mcp_config(client["path"], tenant)
+            click.echo(f"  written: {client['path']}")
+        else:
+            click.echo(f"  skipped: {client['name']}")
 
 
 def _parse_markdown_memories(text: str, tenant: str) -> list[dict]:

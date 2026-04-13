@@ -12,27 +12,27 @@ synapto init
 
 2. Add to your Claude Code MCP config.
 
-**Global** (`~/.claude/settings.json`):
+**Recommended (auto-updates via uvx)** — add to `~/.claude/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "synapto": {
-      "command": "synapto",
-      "args": ["serve"]
+      "command": "uvx",
+      "args": ["synapto", "serve"]
     }
   }
 }
 ```
 
-**Per-project** (`.claude/settings.json` in your repo root):
+**Per-project with tenant isolation** (`.claude/settings.json` in your repo root):
 
 ```json
 {
   "mcpServers": {
     "synapto": {
-      "command": "synapto",
-      "args": ["serve"],
+      "command": "uvx",
+      "args": ["synapto", "serve"],
       "env": {
         "SYNAPTO_DEFAULT_TENANT": "my-project"
       }
@@ -40,6 +40,8 @@ synapto init
   }
 }
 ```
+
+> **Why uvx?** It resolves the latest version from PyPI each time Claude Code starts the server. No manual `pip install --upgrade` needed.
 
 3. Restart Claude Code. Synapto tools will appear in your tool list.
 
