@@ -174,29 +174,24 @@ def stats(tenant: str | None) -> None:
     async def _stats():
         from synapto.config import load_config
         from synapto.db.postgres import PostgresClient
+        from synapto.repositories.entities import EntityRepository
+        from synapto.repositories.memories import MemoryRepository
 
         config = load_config()
         client = PostgresClient(config.pg_dsn)
         await client.connect()
 
         t = tenant or config.default_tenant
-        tenant_filter = "WHERE deleted_at IS NULL AND tenant = %s" if tenant else "WHERE deleted_at IS NULL"
-        params = (t,) if tenant else ()
+        mem_repo = MemoryRepository(client)
+        ent_repo = EntityRepository(client)
 
-        by_type = await client.execute(
-            f"SELECT type, count(*) as cnt FROM memories {tenant_filter} GROUP BY type;", params
-        )
-        by_depth = await client.execute(
-            f"SELECT depth_layer, count(*) as cnt FROM memories {tenant_filter} GROUP BY depth_layer;", params
-        )
+        by_type = await mem_repo.count_by_type(t if tenant else None)
+        by_depth = await mem_repo.count_by_depth(t if tenant else None)
         total = sum(r["cnt"] for r in by_type)
-        entity_count = await client.execute_one(
-            "SELECT count(*) as cnt FROM entities" + (" WHERE tenant = %s" if tenant else ""),
-            (t,) if tenant else None,
-        )
+        entity_count = await ent_repo.count(t if tenant else None)
 
         click.echo(f"total memories: {total}")
-        click.echo(f"total entities: {entity_count['cnt']}")
+        click.echo(f"total entities: {entity_count}")
         click.echo("\nby type:")
         for r in by_type:
             click.echo(f"  {r['type']}: {r['cnt']}")
