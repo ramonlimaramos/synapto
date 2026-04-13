@@ -53,7 +53,7 @@ jobs:
       - name: bump version
         id: bump
         run: |
-          python - <<'PYEOF'
+          uv run python - <<'PYEOF'
           import tomli, tomli_w, re, os
 
           bump_type = "${{ inputs.bump_type }}"
