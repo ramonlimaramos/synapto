@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **server instructions** injected into MCP clients via `FastMCP(instructions=...)` so the LLM knows when to call `recall` and `remember` without requiring manual CLAUDE.md configuration (#11)
+- **`alwaysLoad` tool metadata** on `remember` and `recall` so Claude Code loads their schemas eagerly and skips the deferred `ToolSearch` round-trip — reduces first-call latency while keeping the other eight tools deferred (#15)
 
 ### Documentation
 

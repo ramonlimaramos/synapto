@@ -90,10 +90,15 @@ async def _lifespan(server):
 
 SERVER_INSTRUCTIONS = load_prompt("server_instructions")
 
+# Marks a tool so Claude Code (and any MCP client that honors `_meta.alwaysLoad`)
+# skips the deferred-tool `ToolSearch` handshake and loads the schema eagerly.
+# Reserved for the two tools the LLM is expected to call in most conversations.
+ALWAYS_LOAD_META = {"alwaysLoad": True}
+
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
 
-@mcp.tool
+@mcp.tool(meta=ALWAYS_LOAD_META)
 async def remember(
     content: str,
     memory_type: str = "general",
@@ -153,7 +158,7 @@ async def remember(
     return f"stored memory {memory_id} ({depth_layer}, {entity_count} entities linked)"
 
 
-@mcp.tool
+@mcp.tool(meta=ALWAYS_LOAD_META)
 async def recall(
     query: str,
     tenant: str | None = None,
