@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **server instructions** injected into MCP clients via `FastMCP(instructions=...)` so the LLM knows when to call `recall` and `remember` without requiring manual CLAUDE.md configuration (#11)
 
+### Documentation
+
+- **memory type alignment with Claude Code** — `docs/claude-code.md` now documents that Synapto's `user`, `feedback`, `project`, and `reference` types are a direct 1:1 match with Claude Code's native auto-memory types, enabling zero-transformation import of existing memories (#12)
+
 ## [0.1.0] - 2026-04-13
 
 ### Added
