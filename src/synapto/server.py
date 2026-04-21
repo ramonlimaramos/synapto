@@ -21,6 +21,7 @@ from synapto.graph.relations import create_relation_by_name
 from synapto.hrr.banks import rebuild_bank
 from synapto.hrr.core import DEFAULT_DIM, encode_fact, phases_to_bytes
 from synapto.hrr.retrieval import contradict as hrr_contradict
+from synapto.prompts import load_prompt
 from synapto.repositories.entities import EntityRepository
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
@@ -87,7 +88,9 @@ async def _lifespan(server):
         logger.info("synapto MCP server shut down")
 
 
-mcp = FastMCP("synapto", lifespan=_lifespan)
+SERVER_INSTRUCTIONS = load_prompt("server_instructions")
+
+mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
 
 @mcp.tool
