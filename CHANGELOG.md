@@ -4,6 +4,12 @@ All notable changes to Synapto will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **server instructions** injected into MCP clients via `FastMCP(instructions=...)` so the LLM knows when to call `recall` and `remember` without requiring manual CLAUDE.md configuration (#11)
+
 ## [0.1.0] - 2026-04-13
 
 ### Added
