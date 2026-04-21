@@ -26,6 +26,10 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=2.0.0",
+    # pinned to fix GHSA-jj8c-mmj3-mmgv (CSRF in OAuth client cache);
+    # fastmcp still ships the vulnerable range transitively — drop this once
+    # fastmcp upstream bumps authlib itself
+    "authlib>=1.6.11",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",
