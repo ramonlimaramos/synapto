@@ -67,7 +67,7 @@ synapto init            # or: synapto init --interactive
 
 ### Connect to your agent
 
-The recommended way is `uvx` — it auto-updates on every launch, no manual upgrades:
+The recommended way is `uvx` with `--refresh` — every restart pulls the latest version from PyPI, no manual upgrades:
 
 **Claude Code** (`~/.claude/.mcp.json`):
 
@@ -76,7 +76,7 @@ The recommended way is `uvx` — it auto-updates on every launch, no manual upgr
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["synapto", "serve"]
+      "args": ["--refresh", "synapto", "serve"]
     }
   }
 }
@@ -89,15 +89,15 @@ The recommended way is `uvx` — it auto-updates on every launch, no manual upgr
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["synapto", "serve"]
+      "args": ["--refresh", "synapto", "serve"]
     }
   }
 }
 ```
 
-> **Why uvx?** It resolves the latest version from PyPI each time your agent starts. No `pip install --upgrade` needed — you always get the latest features and fixes automatically.
+> **Why `--refresh`?** Without it, `uvx` reuses the cached environment across restarts, so a new Synapto release on PyPI will not be picked up until the cache expires or you run `uv cache clean synapto` manually. `--refresh` tells `uv` to re-resolve the package on every launch, adding 1–3 seconds to startup in exchange for "always on the latest version" — the right default for an alpha project that ships often. Drop the flag (or pin a version like `"synapto==0.2.0"`) if you want to freeze the version.
 
-Restart your agent. Synapto tools appear automatically.
+Restart your agent. Synapto tools appear automatically, and any future release will be live on the next restart.
 
 ## MCP Tools
 

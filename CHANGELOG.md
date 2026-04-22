@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Documentation
+
+- **install snippets use `uvx --refresh`** so users actually receive new releases on Claude Code / Cursor restart — the previous snippets relied on `uvx` reusing its package cache, which meant a published Synapto release could go unnoticed until the cache expired. README, `docs/claude-code.md`, and `docs/cursor.md` now recommend the `--refresh` flag, document the startup tradeoff, and describe the manual `uv cache clean synapto` escape hatch. Also explains why a full Claude Code quit is required to pick up a new version mid-session.
+
 ## [0.2.0] - 2026-04-22
 
 ### Added
