@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **server instructions** injected into MCP clients via `FastMCP(instructions=...)` so the LLM knows when to call `recall` and `remember` without requiring manual CLAUDE.md configuration (#11)
 - **`alwaysLoad` tool metadata** on `remember` and `recall` so Claude Code loads their schemas eagerly and skips the deferred `ToolSearch` round-trip — reduces first-call latency while keeping the other eight tools deferred (#15)
+- **`<system-reminder>` wrapping on `recall` output** so Claude Code folds recalled memories into the conversation as contextual hints rather than verbatim tool output. The preamble and empty-state copy live in `prompts/recall_preamble.md` and `prompts/recall_empty.md` (reuses the `load_prompt` helper added in #11) (#16)
 
 ### Documentation
 
