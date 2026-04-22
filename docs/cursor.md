@@ -12,14 +12,14 @@ synapto init
 
 2. Add to `.cursor/mcp.json` in your project root:
 
-**Recommended (auto-updates via uvx):**
+**Recommended (auto-updates on every restart):**
 
 ```json
 {
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["synapto", "serve"],
+      "args": ["--refresh", "synapto", "serve"],
       "env": {
         "SYNAPTO_DEFAULT_TENANT": "my-project"
       }
@@ -28,7 +28,7 @@ synapto init
 }
 ```
 
-> **Why uvx?** It resolves the latest version from PyPI each time Cursor starts the server. No manual `pip install --upgrade` needed.
+> **Why `--refresh`?** Without it, `uvx` reuses the cached environment across restarts, so a new Synapto release on PyPI will not be picked up until the cache expires or you run `uv cache clean synapto` manually. `--refresh` tells `uv` to re-resolve the package on every launch, adding 1–3 seconds to startup in exchange for "always on the latest version". Drop the flag (or pin a version like `"synapto==0.2.0"`) once you want to freeze a known-good build.
 
 3. Restart Cursor. Synapto tools will be available to the AI agent.
 

@@ -12,14 +12,14 @@ synapto init
 
 2. Add to your Claude Code MCP config.
 
-**Recommended (auto-updates via uvx)** — add to `~/.claude/.mcp.json`:
+**Recommended (auto-updates on every restart)** — add to `~/.claude/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["synapto", "serve"]
+      "args": ["--refresh", "synapto", "serve"]
     }
   }
 }
@@ -32,7 +32,7 @@ synapto init
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["synapto", "serve"],
+      "args": ["--refresh", "synapto", "serve"],
       "env": {
         "SYNAPTO_DEFAULT_TENANT": "my-project"
       }
@@ -41,7 +41,20 @@ synapto init
 }
 ```
 
-> **Why uvx?** It resolves the latest version from PyPI each time Claude Code starts the server. No manual `pip install --upgrade` needed.
+> **Why `--refresh`?** Without it, `uvx` reuses the cached environment across restarts, so a new Synapto release on PyPI will not be picked up until the cache expires or you run `uv cache clean synapto` manually. `--refresh` tells `uv` to re-resolve the package on every launch, adding 1–3 seconds to Claude Code's MCP startup in exchange for "always on the latest version" — the right default while Synapto is shipping fast. Drop the flag (or pin a version like `"synapto==0.2.0"`) once you want to freeze a known-good build.
+
+### Upgrading mid-session
+
+If a new Synapto release lands while Claude Code is already running, the existing MCP subprocess keeps using the version it started with. To pick up the new release, **fully quit Claude Code (`Cmd+Q`) and relaunch** — the MCP server is a child process of Claude Code, so a window-close is not enough. With `--refresh` in place, the relaunch will pull the new version automatically.
+
+### Forcing an upgrade without `--refresh`
+
+If you pinned the config without `--refresh` and want a one-time upgrade:
+
+```bash
+uv cache clean synapto   # invalidate the cached env
+# then relaunch Claude Code
+```
 
 3. Restart Claude Code. Synapto tools will appear in your tool list.
 
