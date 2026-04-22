@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapto"
-version = "0.1.0"
+version = "0.2.0"
 description = "Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP"
 readme = "README.md"
 license = "MIT"
