@@ -95,6 +95,16 @@ SERVER_INSTRUCTIONS = load_prompt("server_instructions")
 # Reserved for the two tools the LLM is expected to call in most conversations.
 ALWAYS_LOAD_META = {"alwaysLoad": True}
 
+
+def _wrap_system_reminder(body: str) -> str:
+    """Wrap recall output so Claude Code treats it as injected context, not a user message.
+
+    Claude Code recognizes `<system-reminder>...</system-reminder>` blocks and folds them
+    into the conversation as contextual hints (see `src/utils/messages.ts`). Other MCP
+    clients will render the tags verbatim — harmless but not as seamless.
+    """
+    return f"<system-reminder>\n{body.strip()}\n</system-reminder>"
+
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
 
@@ -180,17 +190,22 @@ async def recall(
     results = await hybrid_search(pg, provider, query, tenant=t, depth_layer=depth_layer, limit=limit)
 
     if not results:
-        return "no memories found matching your query"
+        return _wrap_system_reminder(load_prompt("recall_empty"))
 
-    output = []
+    memories = []
     for r in results:
-        output.append(
+        memories.append(
             f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} "
             f"decay={r.decay_score:.2f} trust={r.trust_score:.2f}\n"
             f"  {r.content[:200]}{'...' if len(r.content) > 200 else ''}\n"
             f"  id={r.id}"
         )
-    return f"found {len(results)} memories:\n\n" + "\n\n".join(output)
+    body = (
+        f"{load_prompt('recall_preamble')}\n"
+        f"Recalled {len(results)} memories:\n\n"
+        + "\n\n".join(memories)
+    )
+    return _wrap_system_reminder(body)
 
 
 @mcp.tool
