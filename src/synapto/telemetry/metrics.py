@@ -19,24 +19,39 @@ instrumentation, and the Postgres backend land in later T2/T3/T4/T5/T6 PRs.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 import structlog
 
 MetricType = Literal["counter", "gauge", "histogram"]
+RESERVED_TAGS: frozenset[str] = frozenset({"outcome"})
 
 
 @dataclass(frozen=True)
 class MetricEvent:
-    """Immutable event passed from registry to backend."""
+    """Immutable event passed from registry to backend.
+
+    ``tags`` is wrapped in a read-only ``MappingProxyType`` after init so a
+    backend cannot mutate the dict in place — frozen=True alone only protects
+    against attribute reassignment.
+    """
 
     name: str
     type: MetricType
     value: float
-    tags: dict[str, Any] = field(default_factory=dict)
+    tags: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # freeze the tags view; preserves the original dict for the caller while
+        # giving downstream consumers a read-only handle. O(1).
+        if not isinstance(self.tags, MappingProxyType):
+            object.__setattr__(self, "tags", MappingProxyType(dict(self.tags)))
 
 
 class MetricsBackend(Protocol):
@@ -112,24 +127,59 @@ def set_registry(registry: MetricsRegistry | None) -> None:
 
 @asynccontextmanager
 async def measure(name: str, **tags: Any):
-    """Time the wrapped block and emit a histogram with ``outcome=ok|error``.
+    """Time the wrapped block and emit a histogram tagged with the outcome.
 
     Usage:
         async with measure("synapto.recall.total", tenant="acme"):
             await hybrid_search(...)
 
-    On success, emits a histogram event with ``outcome=ok`` and the elapsed
-    milliseconds as the value. On exception, emits with ``outcome=error`` and
-    re-raises — the caller must decide how to handle the failure; the metric
-    is recorded regardless so error-rate dashboards stay accurate.
+    Outcome semantics:
+        - ``outcome=ok``         — block completed without raising.
+        - ``outcome=error``      — block raised a regular ``Exception``.
+        - ``outcome=cancelled``  — block was cancelled via ``asyncio.CancelledError``.
+                                   Cancellation is normal lifecycle in MCP/async
+                                   contexts; tagging it separately keeps error-rate
+                                   dashboards from inflating during graceful shutdown.
+
+    Other ``BaseException`` subclasses (``KeyboardInterrupt``, ``SystemExit``,
+    ``GeneratorExit``) signal interpreter shutdown, not application behaviour;
+    those propagate without emitting a metric so we don't try to record on
+    a tearing-down logger.
+
+    The ``outcome`` tag is reserved — passing it explicitly raises ``ValueError``
+    to avoid the silent ``TypeError: multiple values for keyword argument`` that
+    would otherwise fire from inside a ``finally`` block and mask the real cause.
     """
+    _reject_reserved(tags)
+
     start = time.perf_counter()
-    outcome = "ok"
+    outcome: str | None = None
     try:
         yield
-    except BaseException:
+        outcome = "ok"
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except Exception:
         outcome = "error"
         raise
     finally:
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        get_registry().histogram(name, elapsed_ms, outcome=outcome, **tags)
+        # outcome stays ``None`` for KeyboardInterrupt / SystemExit / GeneratorExit,
+        # which signal interpreter teardown — emitting then risks writing to a
+        # logger that's already being closed.
+        if outcome is not None:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            get_registry().histogram(name, elapsed_ms, outcome=outcome, **tags)
+
+
+def _reject_reserved(tags: Mapping[str, Any]) -> None:
+    """Raise if a caller tries to override a tag managed by ``measure()``.
+
+    O(k) where k = len(RESERVED_TAGS) — small constant.
+    """
+    overlap = RESERVED_TAGS & tags.keys()
+    if overlap:
+        raise ValueError(
+            f"reserved tag(s) cannot be overridden: {sorted(overlap)}; "
+            "measure() manages these automatically"
+        )

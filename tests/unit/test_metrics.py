@@ -2,12 +2,17 @@
 
 Validates the contract that:
 - counter/gauge/histogram emit MetricEvent objects to the configured backend
-- measure() async ctx mgr times the block, tags outcome=ok on success and
-  outcome=error on exception (and reraises), and emits a histogram event
+- MetricEvent.tags is read-only after construction (frozen=True is not enough)
+- measure() async ctx mgr times the block and tags outcome=ok | error | cancelled
+- measure() rejects callers trying to override the reserved ``outcome`` tag
+- KeyboardInterrupt / SystemExit propagate without emitting a metric
 - get_registry returns a singleton; set_registry swaps it (for tests/config)
 """
 
 from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterator
 
 import pytest
 
@@ -23,7 +28,7 @@ class RecordingBackend:
 
 
 @pytest.fixture
-def recorder() -> RecordingBackend:
+def recorder() -> Iterator[RecordingBackend]:
     """Provide a fresh registry backed by a RecordingBackend per test."""
     from synapto.telemetry.metrics import MetricsRegistry, set_registry
 
@@ -105,6 +110,61 @@ async def test_measure_exception_emits_outcome_error_and_reraises(
     assert evt.type == "histogram"
     assert evt.value >= 0.0
     assert evt.tags == {"tenant": "acme", "outcome": "error"}
+
+
+@pytest.mark.asyncio
+async def test_measure_cancelled_emits_outcome_cancelled_and_reraises(
+    recorder: RecordingBackend,
+) -> None:
+    """asyncio.CancelledError is normal lifecycle in MCP/async — must NOT be tagged as error."""
+    from synapto.telemetry.metrics import measure
+
+    with pytest.raises(asyncio.CancelledError):
+        async with measure("synapto.op.total", tenant="acme"):
+            raise asyncio.CancelledError()
+
+    assert len(recorder.events) == 1
+    evt = recorder.events[0]
+    assert evt.tags == {"tenant": "acme", "outcome": "cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_measure_keyboard_interrupt_propagates_without_emitting(
+    recorder: RecordingBackend,
+) -> None:
+    """Interpreter-level shutdown signals must not trigger metric emission."""
+    from synapto.telemetry.metrics import measure
+
+    with pytest.raises(KeyboardInterrupt):
+        async with measure("synapto.op.total", tenant="acme"):
+            raise KeyboardInterrupt()
+
+    assert recorder.events == []
+
+
+@pytest.mark.asyncio
+async def test_measure_rejects_reserved_outcome_tag(recorder: RecordingBackend) -> None:
+    """Caller overriding ``outcome=`` would TypeError inside finally — refuse loudly up-front."""
+    from synapto.telemetry.metrics import measure
+
+    with pytest.raises(ValueError, match="reserved tag"):
+        async with measure("synapto.op.total", outcome="custom"):
+            pass  # pragma: no cover — never executes
+
+    assert recorder.events == []
+
+
+def test_metric_event_tags_are_read_only_after_construction() -> None:
+    """frozen=True alone doesn't protect dict tags; MappingProxyType must back them."""
+    from synapto.telemetry.metrics import MetricEvent
+
+    evt = MetricEvent(name="x", type="counter", value=1.0, tags={"tenant": "acme"})
+
+    with pytest.raises(TypeError):
+        evt.tags["tenant"] = "evil"  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        evt.tags["new"] = "key"  # type: ignore[index]
 
 
 def test_set_registry_swaps_singleton() -> None:
