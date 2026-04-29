@@ -51,6 +51,10 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "build>=1.0",
+    # pinned to fix CVE-2026-3219 in pip itself; uv bundles 26.0.1 by default
+    # and pip-audit flags it. drop this constraint once uv ships a venv with
+    # pip>=26.1 out of the box.
+    "pip>=26.1",
 ]
 
 [project.scripts]
