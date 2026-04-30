@@ -10,6 +10,11 @@ import click
 
 from synapto import __version__
 
+logger = logging.getLogger("synapto.cli")
+
+# Memory migration: how many texts to embed per provider call.
+EMBEDDING_BATCH_SIZE = 64
+
 
 def _run(coro):
     """Run an async function synchronously."""
@@ -93,6 +98,9 @@ def init(pg_dsn: str, interactive: bool) -> None:
 
         # offer to write MCP client config
         _offer_mcp_config(tenant)
+
+        # memory migration
+        _offer_memory_migration()
 
         # summary
         click.echo("\n--- setup complete ---")
@@ -586,6 +594,205 @@ def _offer_mcp_config(tenant: str = "default") -> None:
             click.echo(f"  written: {client['path']}")
         else:
             click.echo(f"  skipped: {client['name']}")
+
+
+def _offer_memory_migration() -> None:
+    """Scan for existing AI agent memories and offer to preview the results."""
+    from synapto.migration.detect import detect_all
+
+    click.echo("\n--- memory migration ---")
+    if not click.confirm(
+        "scan ~/.claude/projects for existing AI agent memories?",
+        default=True,
+    ):
+        click.echo("  skipped")
+        return
+
+    click.echo("scanning for existing memories...")
+    result = detect_all()
+    if not result.sources:
+        click.echo("no existing memories found")
+        return
+
+    by_client = result.by_client()
+    for client_name, sources in by_client.items():
+        click.echo(f"\n  {client_name}:")
+        for src in sources[:10]:
+            label = f"({src.format})"
+            if src.estimated_count > 1:
+                label += f" ~{src.estimated_count} entries"
+            click.echo(f"    {src.path} {label}")
+        if len(sources) > 10:
+            click.echo(f"    ... and {len(sources) - 10} more")
+
+    click.echo(f"\nfound {len(result.sources)} sources (~{result.total_estimated} estimated memories)")
+    click.echo("run 'synapto migrate-memories' to import them.")
+
+
+@main.command(name="migrate-memories")
+@click.option("--dry-run", is_flag=True, help="preview without importing")
+@click.option("--home", default=None, type=click.Path(exists=True), help="override home directory for scanning")
+def migrate_memories(dry_run: bool, home: str | None) -> None:
+    """Detect and import existing AI agent memories."""
+    from pathlib import Path
+
+    from synapto.migration.detect import detect_all
+
+    scan_home = Path(home) if home else None
+    result = detect_all(scan_home)
+
+    if not result.sources:
+        click.echo("no existing memories found")
+        return
+
+    by_client = result.by_client()
+    for client_name, sources in by_client.items():
+        click.echo(f"\n  {client_name}:")
+        for src in sources:
+            label = f"({src.format})"
+            if src.estimated_count > 1:
+                label += f" ~{src.estimated_count} entries"
+            click.echo(f"    {src.path} {label}")
+
+    click.echo(f"\nfound {len(result.sources)} sources (~{result.total_estimated} estimated memories)")
+
+    if dry_run:
+        # parse and show what would be imported
+        all_parsed = _parse_all_sources(result.sources)
+        click.echo(f"\nwould import {len(all_parsed)} memories:")
+        by_type: dict[str, int] = {}
+        by_depth: dict[str, int] = {}
+        for mem in all_parsed:
+            by_type[mem.memory_type] = by_type.get(mem.memory_type, 0) + 1
+            by_depth[mem.depth_layer] = by_depth.get(mem.depth_layer, 0) + 1
+        for t, c in sorted(by_type.items()):
+            click.echo(f"  {t}: {c}")
+        click.echo("by depth layer:")
+        for d, c in sorted(by_depth.items()):
+            click.echo(f"  {d}: {c}")
+        return
+
+    if not click.confirm("migrate these memories to synapto?", default=True):
+        click.echo("migration cancelled")
+        return
+
+    all_parsed = _parse_all_sources(result.sources)
+    if not all_parsed:
+        click.echo("no memories could be parsed from the detected sources")
+        return
+
+    async def _do_import():
+        from datetime import UTC, datetime
+
+        from psycopg.types.json import Jsonb
+
+        from synapto.config import load_config
+        from synapto.db.migrations import ensure_hnsw_index, run_migrations
+        from synapto.db.postgres import PostgresClient
+        from synapto.embeddings.registry import get_provider
+        from synapto.repositories.memories import MemoryRepository
+
+        config = load_config()
+        client = PostgresClient(config.pg_dsn)
+        await client.connect()
+        await run_migrations(client)
+
+        provider = get_provider(config.embedding_provider)
+        await ensure_hnsw_index(client, provider.dimension)
+
+        mem_repo = MemoryRepository(client)
+
+        # Skip memories whose source file is already in the DB so retries after
+        # a partial run (Ctrl-C, timeout, OOM) don't create duplicates.
+        existing = await mem_repo.find_existing_original_files(config.default_tenant)
+        pending = [
+            m for m in all_parsed
+            if m.metadata.get("original_file") not in existing
+        ]
+        already = len(all_parsed) - len(pending)
+        if already:
+            click.echo(f"  skipping {already} memories already imported")
+
+        if not pending:
+            await client.close()
+            return 0
+
+        migrated_at = datetime.now(UTC).isoformat()
+        count = 0
+
+        # Embed in batches — one provider round-trip per N texts instead of per memory.
+        for batch_start in range(0, len(pending), EMBEDDING_BATCH_SIZE):
+            batch = pending[batch_start:batch_start + EMBEDDING_BATCH_SIZE]
+            embeddings = await provider.embed([m.content for m in batch])
+
+            for mem, embedding in zip(batch, embeddings):
+                meta = {**mem.metadata, "migrated_at": migrated_at}
+                try:
+                    async with client.acquire() as conn:
+                        async with conn.transaction():
+                            await conn.execute(
+                                """
+                                INSERT INTO memories
+                                    (content, summary, embedding, embedding_dim,
+                                     type, tenant, depth_layer, metadata)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                                """,
+                                (
+                                    mem.content,
+                                    mem.summary,
+                                    embedding,
+                                    provider.dimension,
+                                    mem.memory_type,
+                                    config.default_tenant,
+                                    mem.depth_layer,
+                                    Jsonb(meta),
+                                ),
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "failed to import %s: %s",
+                        mem.metadata.get("original_file", "?"),
+                        exc,
+                    )
+                    continue
+
+                count += 1
+                if count % 10 == 0:
+                    click.echo(f"  [{count}/{len(pending)}] importing...")
+
+        await client.close()
+        return count
+
+    imported = _run(_do_import())
+    click.echo(f"\nmigrated {imported} memories")
+
+
+def _parse_all_sources(sources) -> list:
+    """Parse all detected sources into ParsedMemory objects."""
+    from synapto.migration.parse import parse_memory_file, parse_memory_index, parse_transcript
+
+    all_parsed = []
+    seen_files: set[str] = set()
+
+    # process indexes first to track which files they cover
+    for src in sources:
+        if src.format == "memory-index":
+            parsed = parse_memory_index(src.path)
+            all_parsed.extend(parsed)
+            # mark linked files as seen
+            for p in parsed:
+                original = p.metadata.get("original_file", "")
+                if original:
+                    seen_files.add(original)
+
+    # then individual files, skipping those already covered by an index
+    for src in sources:
+        if src.format == "memory-file" and str(src.path) not in seen_files:
+            all_parsed.extend(parse_memory_file(src.path))
+        elif src.format == "transcript":
+            all_parsed.extend(parse_transcript(src.path))
+
+    return all_parsed
 
 
 def _parse_markdown_memories(text: str, tenant: str) -> list[dict]:
