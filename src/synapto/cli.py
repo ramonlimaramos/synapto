@@ -10,6 +10,11 @@ import click
 
 from synapto import __version__
 
+logger = logging.getLogger("synapto.cli")
+
+# Memory migration: how many texts to embed per provider call.
+EMBEDDING_BATCH_SIZE = 64
+
 
 def _run(coro):
     """Run an async function synchronously."""
@@ -621,7 +626,6 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
     from pathlib import Path
 
     from synapto.migration.detect import detect_all
-    from synapto.migration.parse import parse_memory_file, parse_memory_index, parse_transcript
 
     scan_home = Path(home) if home else None
     result = detect_all(scan_home)
@@ -667,17 +671,15 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
         return
 
     async def _do_import():
+        from datetime import datetime, timezone
+
         from psycopg.types.json import Jsonb
 
         from synapto.config import load_config
         from synapto.db.migrations import ensure_hnsw_index, run_migrations
         from synapto.db.postgres import PostgresClient
         from synapto.embeddings.registry import get_provider
-        from synapto.graph.entities import create_entity, extract_entities_from_text
-        from synapto.graph.relations import create_relation_by_name
-        from synapto.repositories.entities import EntityRepository
         from synapto.repositories.memories import MemoryRepository
-        from synapto.repositories.relations import RelationRepository
 
         config = load_config()
         client = PostgresClient(config.pg_dsn)
@@ -688,38 +690,64 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
         await ensure_hnsw_index(client, provider.dimension)
 
         mem_repo = MemoryRepository(client)
-        ent_repo = EntityRepository(client)
-        rel_repo = RelationRepository(client)
 
+        # Skip memories whose source file is already in the DB so retries after
+        # a partial run (Ctrl-C, timeout, OOM) don't create duplicates.
+        existing = await mem_repo.find_existing_original_files(config.default_tenant)
+        pending = [
+            m for m in all_parsed
+            if m.metadata.get("original_file") not in existing
+        ]
+        already = len(all_parsed) - len(pending)
+        if already:
+            click.echo(f"  skipping {already} memories already imported")
+
+        if not pending:
+            await client.close()
+            return 0
+
+        migrated_at = datetime.now(timezone.utc).isoformat()
         count = 0
-        for mem in all_parsed:
-            embedding = await provider.embed_one(mem.content)
-            meta = {**mem.metadata, "migrated_at": "auto"}
-            memory_id = await mem_repo.create(
-                content=mem.content,
-                embedding=embedding,
-                embedding_dim=provider.dimension,
-                memory_type=mem.memory_type,
-                tenant=config.default_tenant,
-                depth_layer=mem.depth_layer,
-                summary=mem.summary,
-                metadata=meta,
-            )
 
-            # extract and link entities
-            entities = extract_entities_from_text(mem.content)
-            for ent_name, ent_type in entities:
-                ent_id = await create_entity(ent_repo, ent_name, ent_type, config.default_tenant)
-                await create_relation_by_name(
-                    rel_repo, ent_repo,
-                    source_name=str(memory_id), source_type="memory",
-                    target_name=ent_name, target_type=ent_type,
-                    relation_type="mentions", tenant=config.default_tenant,
-                )
+        # Embed in batches — one provider round-trip per N texts instead of per memory.
+        for batch_start in range(0, len(pending), EMBEDDING_BATCH_SIZE):
+            batch = pending[batch_start:batch_start + EMBEDDING_BATCH_SIZE]
+            embeddings = await provider.embed([m.content for m in batch])
 
-            count += 1
-            if count % 10 == 0:
-                click.echo(f"  [{count}/{len(all_parsed)}] importing...")
+            for mem, embedding in zip(batch, embeddings):
+                meta = {**mem.metadata, "migrated_at": migrated_at}
+                try:
+                    async with client.acquire() as conn:
+                        async with conn.transaction():
+                            await conn.execute(
+                                """
+                                INSERT INTO memories
+                                    (content, summary, embedding, embedding_dim,
+                                     type, tenant, depth_layer, metadata)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                                """,
+                                (
+                                    mem.content,
+                                    mem.summary,
+                                    embedding,
+                                    provider.dimension,
+                                    mem.memory_type,
+                                    config.default_tenant,
+                                    mem.depth_layer,
+                                    Jsonb(meta),
+                                ),
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "failed to import %s: %s",
+                        mem.metadata.get("original_file", "?"),
+                        exc,
+                    )
+                    continue
+
+                count += 1
+                if count % 10 == 0:
+                    click.echo(f"  [{count}/{len(pending)}] importing...")
 
         await client.close()
         return count
