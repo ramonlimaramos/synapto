@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from synapto.telemetry.decorators import instrumented_tool
 from synapto.telemetry.logging import configure_logging
 from synapto.telemetry.metrics import (
     LogMetricsBackend,
@@ -18,6 +19,7 @@ __all__ = [
     "get_registry",
     "set_registry",
     "measure",
+    "instrumented_tool",
     "MetricsRegistry",
     "MetricEvent",
     "MetricsBackend",
