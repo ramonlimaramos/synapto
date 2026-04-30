@@ -596,8 +596,14 @@ def _offer_memory_migration() -> None:
     from synapto.migration.detect import detect_all
 
     click.echo("\n--- memory migration ---")
-    click.echo("scanning for existing memories...")
+    if not click.confirm(
+        "scan ~/.claude/projects for existing AI agent memories?",
+        default=True,
+    ):
+        click.echo("  skipped")
+        return
 
+    click.echo("scanning for existing memories...")
     result = detect_all()
     if not result.sources:
         click.echo("no existing memories found")
@@ -671,7 +677,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
         return
 
     async def _do_import():
-        from datetime import datetime, timezone
+        from datetime import UTC, datetime
 
         from psycopg.types.json import Jsonb
 
@@ -706,7 +712,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
             await client.close()
             return 0
 
-        migrated_at = datetime.now(timezone.utc).isoformat()
+        migrated_at = datetime.now(UTC).isoformat()
         count = 0
 
         # Embed in batches — one provider round-trip per N texts instead of per memory.

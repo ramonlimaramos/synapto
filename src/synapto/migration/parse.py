@@ -123,7 +123,10 @@ def parse_memory_file(path: Path) -> list[ParsedMemory]:
 # Claude Code — MEMORY.md index
 # ---------------------------------------------------------------------------
 
-_INDEX_ENTRY_RE = re.compile(r"^-\s+\[([^\]]+)\]\(([^)]+)\)\s*(?:—\s*(.+))?$")
+# Match a MEMORY.md index entry: ``- [Title](file.md) — description``.
+# The separator before the description may be an em dash (U+2014), an en dash
+# (U+2013), or an ASCII hyphen, since editors and AI agents normalize differently.
+INDEX_ENTRY_RE = re.compile(r"^-\s+\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*(.+))?$")
 
 
 def parse_memory_index(path: Path) -> list[ParsedMemory]:
@@ -143,7 +146,7 @@ def parse_memory_index(path: Path) -> list[ParsedMemory]:
     parent = path.parent
 
     for line in text.split("\n"):
-        match = _INDEX_ENTRY_RE.match(line.strip())
+        match = INDEX_ENTRY_RE.match(line.strip())
         if not match:
             continue
 

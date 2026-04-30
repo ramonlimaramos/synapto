@@ -105,6 +105,35 @@ def test_parse_memory_index_skips_missing_links(tmp_path: Path) -> None:
     assert parse_memory_index(index) == []
 
 
+def test_parse_memory_index_accepts_ascii_and_en_dash(tmp_path: Path) -> None:
+    """The index regex must accept em dash (—), en dash (–), and ASCII hyphen (-)."""
+    _write(
+        tmp_path / "em.md",
+        "---\nname: em\ndescription: em-dash entry\ntype: feedback\n---\n\nem dash content.\n",
+    )
+    _write(
+        tmp_path / "en.md",
+        "---\nname: en\ndescription: en-dash entry\ntype: feedback\n---\n\nen dash content.\n",
+    )
+    _write(
+        tmp_path / "ascii.md",
+        "---\nname: ascii\ndescription: ascii-hyphen entry\ntype: feedback\n---\n\nascii hyphen content.\n",
+    )
+    index = _write(
+        tmp_path / "MEMORY.md",
+        "- [Em](em.md) — em dash here\n"
+        "- [En](en.md) – en dash here\n"
+        "- [Ascii](ascii.md) - ascii hyphen here\n",
+    )
+
+    results = parse_memory_index(index)
+    assert len(results) == 3
+    contents = {r.content.strip() for r in results}
+    assert any("em dash" in c for c in contents)
+    assert any("en dash" in c for c in contents)
+    assert any("ascii hyphen" in c for c in contents)
+
+
 def test_parse_memory_index_fallback_for_raw_files(tmp_path: Path) -> None:
     _write(tmp_path / "notes.md", "Some raw notes without frontmatter.")
     index = _write(tmp_path / "MEMORY.md", "- [Notes](notes.md) — random notes\n")

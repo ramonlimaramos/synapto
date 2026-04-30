@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from synapto.migration.parse import INDEX_ENTRY_RE
+
 logger = logging.getLogger("synapto.migration.detect")
 
 # ---------------------------------------------------------------------------
@@ -75,12 +77,16 @@ def _has_memory_frontmatter(path: Path) -> bool:
 
 
 def _count_index_entries(index_path: Path) -> int:
-    """Count linkable entries in a MEMORY.md index file."""
+    """Count linkable entries in a MEMORY.md index file.
+
+    Uses the same regex as :data:`synapto.migration.parse.INDEX_ENTRY_RE` so the
+    detection estimate matches the number the parser will actually import.
+    """
     try:
         text = index_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    return sum(1 for line in text.split("\n") if line.strip().startswith("- ["))
+    return sum(1 for line in text.split("\n") if INDEX_ENTRY_RE.match(line.strip()))
 
 
 def scan_claude_code_memories(home: Path | None = None) -> list[MemorySource]:
