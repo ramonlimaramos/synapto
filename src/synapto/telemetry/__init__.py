@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from synapto.telemetry.backends import PostgresMetricsBackend
 from synapto.telemetry.decorators import instrumented_tool
 from synapto.telemetry.logging import configure_logging
 from synapto.telemetry.metrics import (
@@ -24,4 +25,5 @@ __all__ = [
     "MetricEvent",
     "MetricsBackend",
     "LogMetricsBackend",
+    "PostgresMetricsBackend",
 ]

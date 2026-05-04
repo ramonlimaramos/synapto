@@ -27,7 +27,12 @@ from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
-from synapto.telemetry import instrumented_tool
+from synapto.telemetry import (
+    MetricsRegistry,
+    PostgresMetricsBackend,
+    instrumented_tool,
+    set_registry,
+)
 
 logger = logging.getLogger("synapto.server")
 
@@ -67,6 +72,12 @@ async def _lifespan(server):
     _pg = PostgresClient(_config.pg_dsn)
     await _pg.connect()
     await run_migrations(_pg)
+
+    # Mount the Postgres-backed metrics registry now that the pool is open.
+    # CLI commands that don't go through this lifespan keep the default
+    # LogMetricsBackend (works without a DB).
+    set_registry(MetricsRegistry(backend=PostgresMetricsBackend(_pg)))
+    logger.info("metrics backend: postgres")
 
     _cache = RedisCache(_config.redis_url)
     await _cache.connect()
