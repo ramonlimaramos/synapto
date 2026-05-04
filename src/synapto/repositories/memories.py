@@ -95,6 +95,14 @@ _COUNT_BY_TENANT = """
     {where_clause} GROUP BY tenant ORDER BY cnt DESC;
 """
 
+_SELECT_ORIGINAL_FILES = """
+    SELECT metadata->>'original_file' AS original_file
+    FROM memories
+    WHERE tenant = %s
+      AND deleted_at IS NULL
+      AND metadata ? 'original_file';
+"""
+
 
 # ---------------------------------------------------------------------------
 # Repository
@@ -196,6 +204,10 @@ class MemoryRepository:
     async def count_by_tenant(self, tenant: str | None = None) -> list[dict]:
         where, params = self._tenant_filter(tenant)
         return await self._db.execute(_COUNT_BY_TENANT.format(where_clause=where), params)
+
+    async def find_existing_original_files(self, tenant: str) -> set[str]:
+        rows = await self._db.execute(_SELECT_ORIGINAL_FILES, (tenant,))
+        return {r["original_file"] for r in rows if r.get("original_file")}
 
     @staticmethod
     def _tenant_filter(tenant: str | None) -> tuple[str, tuple]:
