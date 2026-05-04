@@ -27,6 +27,7 @@ from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
+from synapto.telemetry import instrumented_tool
 
 logger = logging.getLogger("synapto.server")
 
@@ -109,6 +110,7 @@ mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
 
 @mcp.tool(meta=ALWAYS_LOAD_META)
+@instrumented_tool
 async def remember(
     content: str,
     memory_type: str = "general",
@@ -169,6 +171,7 @@ async def remember(
 
 
 @mcp.tool(meta=ALWAYS_LOAD_META)
+@instrumented_tool
 async def recall(
     query: str,
     tenant: str | None = None,
@@ -209,6 +212,7 @@ async def recall(
 
 
 @mcp.tool
+@instrumented_tool
 async def relate(
     from_entity: str,
     to_entity: str,
@@ -237,6 +241,7 @@ async def relate(
 
 
 @mcp.tool
+@instrumented_tool
 async def forget(memory_id: str) -> str:
     """Soft-delete a memory by ID.
 
@@ -254,6 +259,7 @@ async def forget(memory_id: str) -> str:
 
 
 @mcp.tool
+@instrumented_tool
 async def graph_query(
     entity: str,
     hops: int = 2,
@@ -287,6 +293,7 @@ async def graph_query(
 
 
 @mcp.tool
+@instrumented_tool
 async def list_entities_tool(
     tenant: str | None = None,
     entity_type: str | None = None,
@@ -313,6 +320,7 @@ async def list_entities_tool(
 
 
 @mcp.tool
+@instrumented_tool
 async def memory_stats(tenant: str | None = None) -> str:
     """Show memory statistics — counts by type, depth layer, and decay distribution.
 
@@ -350,6 +358,7 @@ async def memory_stats(tenant: str | None = None) -> str:
 
 
 @mcp.tool
+@instrumented_tool
 async def maintain() -> str:
     """Run maintenance tasks — update decay scores, cleanup ephemeral memories."""
     pg = _get_pg()
@@ -359,6 +368,7 @@ async def maintain() -> str:
 
 
 @mcp.tool
+@instrumented_tool
 async def trust_feedback(memory_id: str, helpful: bool) -> str:
     """Adjust a memory's trust score based on feedback.
 
@@ -382,6 +392,7 @@ async def trust_feedback(memory_id: str, helpful: bool) -> str:
 
 
 @mcp.tool
+@instrumented_tool
 async def find_contradictions(tenant: str | None = None, threshold: float = 0.3) -> str:
     """Detect potentially contradictory memories.
 
