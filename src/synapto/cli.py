@@ -24,14 +24,19 @@ def _run(coro):
 @click.group()
 @click.version_option(version=__version__, prog_name="synapto")
 @click.option("--verbose", "-v", is_flag=True, help="enable debug logging")
-def main(verbose: bool) -> None:
+@click.option(
+    "--log-format",
+    type=click.Choice(["json", "console"], case_sensitive=False),
+    default="json",
+    show_default=True,
+    help="log output format",
+)
+def main(verbose: bool, log_format: str) -> None:
     """Synapto — persistent memory graph for AI coding agents."""
+    from synapto.telemetry.logging import configure_logging
+
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    configure_logging(level=level, fmt=log_format)  # type: ignore[arg-type]
 
 
 @main.command()
