@@ -58,13 +58,15 @@ class MetricsRepository:
     async def insert(
         self,
         name: str,
-        type: str,
+        metric_type: str,
         value: float,
         tags: dict[str, Any],
     ) -> None:
+        # ``metric_type`` rather than ``type`` to avoid shadowing the Python builtin.
+        # The DB column is still named ``type``; the rename is local to the API.
         await self._db.execute(_INSERT, {
             "name": name,
-            "type": type,
+            "type": metric_type,
             "value": value,
             "tags": Jsonb(tags),
         })

@@ -10,8 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from synapto.db.migrations import run_migrations
@@ -38,7 +36,7 @@ class TestMetricsRepository:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
-        await repo.insert(name="synapto.tool.recall.calls", type="counter", value=3.0, tags={"tenant": "acme"})
+        await repo.insert(name="synapto.tool.recall.calls", metric_type="counter", value=3.0, tags={"tenant": "acme"})
 
         rows = await metrics_table.execute("SELECT name, type, value, tags FROM metrics_events;")
         assert len(rows) == 1
@@ -54,7 +52,7 @@ class TestMetricsRepository:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
-        await repo.insert(name="synapto.pool.in_use", type="gauge", value=5.0, tags={})
+        await repo.insert(name="synapto.pool.in_use", metric_type="gauge", value=5.0, tags={})
 
         row = await metrics_table.execute_one("SELECT tags FROM metrics_events;")
         assert row is not None
@@ -65,7 +63,7 @@ class TestMetricsRepository:
 
         repo = MetricsRepository(metrics_table)
         tags = {"tenant": "acme", "outcome": "ok", "depth": "core"}
-        await repo.insert(name="synapto.recall.vector_ms", type="histogram", value=23.4, tags=tags)
+        await repo.insert(name="synapto.recall.vector_ms", metric_type="histogram", value=23.4, tags=tags)
 
         row = await metrics_table.execute_one("SELECT tags FROM metrics_events;")
         assert row is not None
@@ -78,7 +76,7 @@ class TestMetricsRepository:
 
         repo = MetricsRepository(metrics_table)
         for i in range(3):
-            await repo.insert(name="synapto.op.total", type="histogram", value=float(i), tags={})
+            await repo.insert(name="synapto.op.total", metric_type="histogram", value=float(i), tags={})
 
         rows = await repo.list_by_name("synapto.op.total")
         assert len(rows) == 3
@@ -91,8 +89,8 @@ class TestMetricsRepository:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
-        await repo.insert(name="old.metric", type="counter", value=1.0, tags={})
-        await repo.insert(name="fresh.metric", type="counter", value=1.0, tags={})
+        await repo.insert(name="old.metric", metric_type="counter", value=1.0, tags={})
+        await repo.insert(name="fresh.metric", metric_type="counter", value=1.0, tags={})
 
         # backdate the first row by 10 days
         await metrics_table.execute(
@@ -123,15 +121,59 @@ class TestPostgresMetricsBackend:
             )
         )
 
-        # emit() schedules a fire-and-forget task; let it settle.
-        for _ in range(20):
-            rows = await metrics_table.execute("SELECT name, value, tags FROM metrics_events;")
-            if rows:
-                break
-            await asyncio.sleep(0.05)
+        # close() drains pending tasks deterministically — no polling needed.
+        await backend.close()
 
+        rows = await metrics_table.execute("SELECT name, value, tags FROM metrics_events;")
         assert len(rows) == 1
         row = rows[0]
         assert row["name"] == "synapto.tool.recall.latency"
         assert row["value"] == pytest.approx(42.5)
         assert row["tags"] == {"outcome": "ok"}
+
+    async def test_emit_keeps_strong_reference_so_task_is_not_gc_dropped(
+        self, metrics_table: PostgresClient
+    ) -> None:
+        """Without keeping a reference, asyncio may GC the task before it runs."""
+        from synapto.telemetry.backends.postgres import PostgresMetricsBackend
+        from synapto.telemetry.metrics import MetricEvent
+
+        backend = PostgresMetricsBackend(metrics_table)
+        backend.emit(
+            MetricEvent(name="ref.test", type="counter", value=1.0, tags={})
+        )
+
+        # The task must be tracked the moment emit() returns.
+        assert len(backend._tasks) == 1
+
+        await backend.close()
+        assert len(backend._tasks) == 0
+
+    async def test_emit_drops_under_backpressure_and_records_count(
+        self, metrics_table: PostgresClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Burst above MAX_INFLIGHT_TASKS must drop excess events without crashing."""
+        from synapto.telemetry.backends import postgres as backend_mod
+        from synapto.telemetry.metrics import MetricEvent
+
+        monkeypatch.setattr(backend_mod, "MAX_INFLIGHT_TASKS", 2)
+        backend = backend_mod.PostgresMetricsBackend(metrics_table)
+
+        for i in range(5):
+            backend.emit(MetricEvent(name="burst", type="counter", value=float(i), tags={}))
+
+        # 2 admitted, 3 dropped.
+        assert backend._dropped_count == 3
+        await backend.close()
+
+        rows = await metrics_table.execute("SELECT count(*) AS n FROM metrics_events WHERE name = 'burst';")
+        assert rows[0]["n"] == 2
+
+    async def test_close_is_idempotent_and_safe_when_empty(
+        self, metrics_table: PostgresClient
+    ) -> None:
+        from synapto.telemetry.backends.postgres import PostgresMetricsBackend
+
+        backend = PostgresMetricsBackend(metrics_table)
+        await backend.close()  # nothing in flight, must be a no-op
+        await backend.close()  # second call also safe
