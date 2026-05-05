@@ -105,6 +105,8 @@ Restart your agent. Synapto tools appear automatically, and any future release w
 |------|-------------|
 | `remember` | Store a memory (entities and search vectors are created automatically) |
 | `recall` | Search memories by meaning |
+| `get_memory` | Fetch the complete content and metadata for one recalled memory |
+| `get_memories` | Fetch complete content for multiple recalled memories |
 | `relate` | Link two entities ("Hermes" --[produces]--> "agent.messages") |
 | `forget` | Soft-delete a memory |
 | `trust_feedback` | Mark a memory as helpful or unhelpful |

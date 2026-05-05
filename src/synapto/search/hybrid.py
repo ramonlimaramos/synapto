@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -101,6 +102,9 @@ class SearchResult:
     trust_score: float
     rrf_score: float
     metadata: dict[str, Any]
+    access_count: int
+    created_at: datetime
+    accessed_at: datetime
 
 
 def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
@@ -178,6 +182,9 @@ async def hybrid_search(
             trust_score=row.get("trust_score", 0.5),
             rrf_score=final_score,
             metadata=row["metadata"] or {},
+            access_count=row["access_count"],
+            created_at=row["created_at"],
+            accessed_at=row["accessed_at"],
         )
         for row, final_score in scored_rows
     ]
@@ -235,6 +242,9 @@ async def vector_search(
             trust_score=row.get("trust_score", 0.5),
             rrf_score=row.get("similarity", 0.0),
             metadata=row["metadata"] or {},
+            access_count=row["access_count"],
+            created_at=row["created_at"],
+            accessed_at=row["accessed_at"],
         )
         for row in rows
     ]

@@ -23,6 +23,42 @@ _INSERT = """
     RETURNING id;
 """
 
+_GET_BY_ID = """
+    SELECT
+        id,
+        content,
+        summary,
+        type,
+        tenant,
+        depth_layer,
+        metadata,
+        decay_score,
+        trust_score,
+        access_count,
+        created_at,
+        accessed_at
+    FROM memories
+    WHERE id = %s AND deleted_at IS NULL;
+"""
+
+_GET_BY_IDS = """
+    SELECT
+        id,
+        content,
+        summary,
+        type,
+        tenant,
+        depth_layer,
+        metadata,
+        decay_score,
+        trust_score,
+        access_count,
+        created_at,
+        accessed_at
+    FROM memories
+    WHERE id = ANY(%s::uuid[]) AND deleted_at IS NULL;
+"""
+
 _UPDATE_HRR = "UPDATE memories SET hrr_vector = %s, hrr_dim = %s WHERE id = %s;"
 
 _SOFT_DELETE = """
@@ -126,20 +162,31 @@ class MemoryRepository:
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
-        row = await self._db.execute_one(_INSERT, {
-            "content": content,
-            "summary": summary,
-            "emb": embedding,
-            "dim": embedding_dim,
-            "type": memory_type,
-            "tenant": tenant,
-            "depth": depth_layer,
-            "meta": Jsonb(metadata or {}),
-        })
+        row = await self._db.execute_one(
+            _INSERT,
+            {
+                "content": content,
+                "summary": summary,
+                "emb": embedding,
+                "dim": embedding_dim,
+                "type": memory_type,
+                "tenant": tenant,
+                "depth": depth_layer,
+                "meta": Jsonb(metadata or {}),
+            },
+        )
         return row["id"]
 
     async def update_hrr(self, memory_id: UUID, hrr_vector: bytes, hrr_dim: int) -> None:
         await self._db.execute(_UPDATE_HRR, (hrr_vector, hrr_dim, memory_id))
+
+    async def get_by_id(self, memory_id: str | UUID) -> dict[str, Any] | None:
+        return await self._db.execute_one(_GET_BY_ID, (memory_id,))
+
+    async def get_by_ids(self, memory_ids: list[str | UUID]) -> list[dict[str, Any]]:
+        if not memory_ids:
+            return []
+        return await self._db.execute(_GET_BY_IDS, (memory_ids,))
 
     async def soft_delete(self, memory_id: str) -> list[dict]:
         return await self._db.execute(_SOFT_DELETE, (memory_id,))
@@ -166,8 +213,9 @@ class MemoryRepository:
 
     # -- hrr vectors --
 
-    async def select_hrr_vectors(self, tenant: str, type_filter: str | None = None,
-                                 depth_filter: str | None = None) -> list[dict]:
+    async def select_hrr_vectors(
+        self, tenant: str, type_filter: str | None = None, depth_filter: str | None = None
+    ) -> list[dict]:
         where = ["deleted_at IS NULL", "tenant = %s", "hrr_vector IS NOT NULL"]
         params: list = [tenant]
         if type_filter:
@@ -181,8 +229,7 @@ class MemoryRepository:
 
     # -- hrr retrieval --
 
-    async def select_with_hrr(self, tenant: str, depth_layer: str | None = None,
-                              limit: int = 100) -> list[dict]:
+    async def select_with_hrr(self, tenant: str, depth_layer: str | None = None, limit: int = 100) -> list[dict]:
         where = ["deleted_at IS NULL", "tenant = %s", "hrr_vector IS NOT NULL"]
         params: list = [tenant]
         if depth_layer:

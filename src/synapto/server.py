@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -95,6 +97,9 @@ SERVER_INSTRUCTIONS = load_prompt("server_instructions")
 # skips the deferred-tool `ToolSearch` handshake and loads the schema eagerly.
 # Reserved for the two tools the LLM is expected to call in most conversations.
 ALWAYS_LOAD_META = {"alwaysLoad": True}
+MAX_RECALL_PREVIEW_CHARS = 1000
+DEFAULT_RECALL_PREVIEW_CHARS = 200
+MAX_BULK_MEMORY_IDS = 20
 
 
 def _wrap_system_reminder(body: str) -> str:
@@ -105,6 +110,68 @@ def _wrap_system_reminder(body: str) -> str:
     clients will render the tags verbatim — harmless but not as seamless.
     """
     return f"<system-reminder>\n{body.strip()}\n</system-reminder>"
+
+
+def _format_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.isoformat()
+
+
+def _format_json(value: dict[str, Any] | None) -> str:
+    return json.dumps(value or {}, ensure_ascii=False, sort_keys=True)
+
+
+def _format_memory(
+    row: dict[str, Any],
+    *,
+    include_entities: bool = False,
+    entities: list[dict[str, Any]] | None = None,
+    include_relations: bool = False,
+    relations: list[dict[str, Any]] | None = None,
+) -> str:
+    lines = [
+        f"id: {row['id']}",
+        f"tenant: {row['tenant']}",
+        f"type: {row['type']}",
+        f"depth_layer: {row['depth_layer']}",
+        f"trust_score: {float(row.get('trust_score', 0.5)):.2f}",
+        f"decay_score: {float(row.get('decay_score', 1.0)):.2f}",
+        f"access_count: {row.get('access_count', 0)}",
+        f"created_at: {_format_timestamp(row.get('created_at'))}",
+        f"accessed_at: {_format_timestamp(row.get('accessed_at'))}",
+    ]
+    if row.get("summary"):
+        lines.append(f"summary: {row['summary']}")
+    lines.append(f"metadata: {_format_json(row.get('metadata'))}")
+
+    if include_entities:
+        entity_names = [e["name"] for e in entities or []]
+        lines.append(f"entities: {', '.join(entity_names) if entity_names else '(none)'}")
+
+    if include_relations:
+        rel_lines = [f"{r['from_entity']} --[{r['relation_type']}]--> {r['to_entity']}" for r in relations or []]
+        lines.append("relations:")
+        if rel_lines:
+            lines.extend(f"  {line}" for line in rel_lines)
+        else:
+            lines.append("  (none)")
+
+    lines.append("content:")
+    lines.append(row["content"])
+    return "\n".join(lines)
+
+
+def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
+    valid_ids: list[UUID] = []
+    invalid_ids: list[str] = []
+    for memory_id in memory_ids:
+        try:
+            valid_ids.append(UUID(memory_id))
+        except ValueError:
+            invalid_ids.append(memory_id)
+    return valid_ids, invalid_ids
+
 
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
@@ -177,6 +244,7 @@ async def recall(
     tenant: str | None = None,
     depth_layer: str | None = None,
     limit: int = 10,
+    preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
 ) -> str:
     """Search memories using hybrid semantic + keyword search with RRF ranking.
 
@@ -185,10 +253,12 @@ async def recall(
         tenant: filter to a specific project/tenant
         depth_layer: filter to a specific depth layer (core, stable, working, ephemeral)
         limit: max results to return
+        preview_chars: max content characters per result (0-1000)
     """
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
+    preview_chars = max(0, min(preview_chars, MAX_RECALL_PREVIEW_CHARS))
 
     results = await hybrid_search(pg, provider, query, tenant=t, depth_layer=depth_layer, limit=limit)
 
@@ -197,18 +267,121 @@ async def recall(
 
     memories = []
     for r in results:
+        preview = r.content[:preview_chars]
+        if preview_chars and len(r.content) > preview_chars:
+            preview += "..."
         memories.append(
             f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} "
-            f"decay={r.decay_score:.2f} trust={r.trust_score:.2f}\n"
-            f"  {r.content[:200]}{'...' if len(r.content) > 200 else ''}\n"
+            f"decay={r.decay_score:.2f} trust={r.trust_score:.2f} "
+            f"tenant={r.tenant} created_at={_format_timestamp(r.created_at)}\n"
+            f"  {preview}\n"
             f"  id={r.id}"
         )
-    body = (
-        f"{load_prompt('recall_preamble')}\n"
-        f"Recalled {len(results)} memories:\n\n"
-        + "\n\n".join(memories)
-    )
+    body = f"{load_prompt('recall_preamble')}\nRecalled {len(results)} memories:\n\n" + "\n\n".join(memories)
     return _wrap_system_reminder(body)
+
+
+@mcp.tool
+@instrumented_tool
+async def get_memory(
+    memory_id: str,
+    include_entities: bool = True,
+    include_relations: bool = False,
+) -> str:
+    """Fetch a complete memory by ID after recall identifies a relevant hit.
+
+    Args:
+        memory_id: UUID of the memory to fetch
+        include_entities: include entities linked to the memory
+        include_relations: include relations for linked entities
+    """
+    pg = _get_pg()
+    try:
+        parsed_id = UUID(memory_id)
+    except ValueError:
+        return f"invalid memory id: {memory_id}"
+
+    mem_repo = MemoryRepository(pg)
+    row = await mem_repo.get_by_id(parsed_id)
+    if not row:
+        return f"memory {memory_id} not found or deleted"
+
+    entities = []
+    relations = []
+    if include_entities or include_relations:
+        ent_repo = EntityRepository(pg)
+        entities = await ent_repo.get_memory_entities(parsed_id)
+
+    if include_relations and entities:
+        rel_repo = RelationRepository(pg)
+        seen_relation_ids: set[UUID] = set()
+        for entity in entities:
+            for relation in await rel_repo.get_relations(entity["name"], row["tenant"]):
+                if relation["id"] in seen_relation_ids:
+                    continue
+                seen_relation_ids.add(relation["id"])
+                relations.append(relation)
+
+    return _format_memory(
+        row,
+        include_entities=include_entities,
+        entities=entities,
+        include_relations=include_relations,
+        relations=relations,
+    )
+
+
+@mcp.tool
+@instrumented_tool
+async def get_memories(
+    memory_ids: list[str],
+    include_entities: bool = False,
+) -> str:
+    """Fetch multiple complete memories by ID, preserving the requested order.
+
+    Args:
+        memory_ids: UUIDs of memories to fetch (max 20)
+        include_entities: include entities linked to each memory
+    """
+    if len(memory_ids) > MAX_BULK_MEMORY_IDS:
+        return f"too many memory ids: max {MAX_BULK_MEMORY_IDS}, got {len(memory_ids)}"
+
+    valid_ids, invalid_ids = _parse_memory_ids(memory_ids)
+    rows = []
+    if valid_ids:
+        pg = _get_pg()
+        mem_repo = MemoryRepository(pg)
+        rows = await mem_repo.get_by_ids(valid_ids)
+    by_id = {str(row["id"]): row for row in rows}
+
+    entities_by_id: dict[str, list[dict[str, Any]]] = {}
+    if include_entities and rows:
+        pg = _get_pg()
+        ent_repo = EntityRepository(pg)
+        for row in rows:
+            entities_by_id[str(row["id"])] = await ent_repo.get_memory_entities(row["id"])
+
+    output = []
+    invalid = set(invalid_ids)
+    for memory_id in memory_ids:
+        if memory_id in invalid:
+            output.append(f"memory {memory_id}: invalid id")
+            continue
+
+        row = by_id.get(memory_id)
+        if not row:
+            output.append(f"memory {memory_id}: not found or deleted")
+            continue
+
+        output.append(
+            _format_memory(
+                row,
+                include_entities=include_entities,
+                entities=entities_by_id.get(memory_id),
+            )
+        )
+
+    return "\n\n---\n\n".join(output) if output else "no memory ids provided"
 
 
 @mcp.tool

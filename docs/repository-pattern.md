@@ -84,6 +84,8 @@ rows = await repo.soft_delete(memory_id)
 | Method | Description |
 |--------|-------------|
 | `create()` | Insert a new memory with embedding |
+| `get_by_id()` | Fetch a complete active memory by ID |
+| `get_by_ids()` | Fetch multiple active memories by ID |
 | `update_hrr()` | Store HRR vector for a memory |
 | `soft_delete()` | Set deleted_at timestamp |
 | `update_trust()` | Adjust trust score (asymmetric +0.05/-0.10) |

@@ -12,6 +12,8 @@ DEFERRED_TOOLS = (
     "forget",
     "trust_feedback",
     "find_contradictions",
+    "get_memory",
+    "get_memories",
     "graph_query",
     "list_entities_tool",
     "memory_stats",
@@ -27,9 +29,7 @@ def test_always_load_meta_constant_shape():
 async def test_critical_tools_carry_always_load_meta(name: str):
     """`remember` and `recall` must ship `alwaysLoad: true` so MCP clients skip ToolSearch."""
     tool = await mcp.get_tool(name)
-    assert tool.meta == ALWAYS_LOAD_META, (
-        f"{name!r} must expose alwaysLoad metadata so Claude Code loads it eagerly"
-    )
+    assert tool.meta == ALWAYS_LOAD_META, f"{name!r} must expose alwaysLoad metadata so Claude Code loads it eagerly"
 
 
 @pytest.mark.parametrize("name", DEFERRED_TOOLS)
