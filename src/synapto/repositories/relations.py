@@ -63,6 +63,18 @@ _GET_BOTH = """
     WHERE (ef.name = %s OR et.name = %s) AND ef.tenant = %s;
 """
 
+_GET_FOR_ENTITIES = """
+    SELECT r.id, r.relation_type, r.weight,
+           ef.name AS from_entity, et.name AS to_entity
+    FROM relations r
+    JOIN entities ef ON ef.id = r.from_entity_id
+    JOIN entities et ON et.id = r.to_entity_id
+    WHERE ef.tenant = %s
+      AND et.tenant = %s
+      AND (ef.name = ANY(%s) OR et.name = ANY(%s))
+    ORDER BY r.relation_type, ef.name, et.name;
+"""
+
 _DELETE = "DELETE FROM relations WHERE id = %s RETURNING id;"
 
 _COUNT = "SELECT count(*) as cnt FROM relations;"
@@ -87,13 +99,16 @@ class RelationRepository:
         weight: float = 1.0,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
-        row = await self._db.execute_one(_UPSERT, {
-            "from_id": from_entity_id,
-            "to_id": to_entity_id,
-            "type": relation_type,
-            "weight": weight,
-            "meta": Jsonb(metadata or {}),
-        })
+        row = await self._db.execute_one(
+            _UPSERT,
+            {
+                "from_id": from_entity_id,
+                "to_id": to_entity_id,
+                "type": relation_type,
+                "weight": weight,
+                "meta": Jsonb(metadata or {}),
+            },
+        )
         return row["id"]
 
     async def upsert_by_name(
@@ -104,13 +119,16 @@ class RelationRepository:
         tenant: str = "default",
         weight: float = 1.0,
     ) -> UUID | None:
-        row = await self._db.execute_one(_UPSERT_BY_NAME, {
-            "from": from_name,
-            "to": to_name,
-            "type": relation_type,
-            "tenant": tenant,
-            "weight": weight,
-        })
+        row = await self._db.execute_one(
+            _UPSERT_BY_NAME,
+            {
+                "from": from_name,
+                "to": to_name,
+                "type": relation_type,
+                "tenant": tenant,
+                "weight": weight,
+            },
+        )
         return row["id"] if row else None
 
     async def get_relations(
@@ -124,6 +142,22 @@ class RelationRepository:
         elif direction == "incoming":
             return await self._db.execute(_GET_INCOMING, (entity_name, tenant))
         return await self._db.execute(_GET_BOTH, (entity_name, entity_name, tenant))
+
+    async def get_relations_for_entities(
+        self, entity_names: list[str], tenant: str = "default"
+    ) -> list[dict[str, Any]]:
+        if not entity_names:
+            return []
+
+        rows = await self._db.execute(_GET_FOR_ENTITIES, (tenant, tenant, entity_names, entity_names))
+        seen: set[UUID] = set()
+        deduped = []
+        for row in rows:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            deduped.append(row)
+        return deduped
 
     async def delete(self, relation_id: UUID) -> bool:
         rows = await self._db.execute(_DELETE, (relation_id,))

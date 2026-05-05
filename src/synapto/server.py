@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
 from synapto.config import load_config
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
@@ -100,6 +101,7 @@ ALWAYS_LOAD_META = {"alwaysLoad": True}
 MAX_RECALL_PREVIEW_CHARS = 1000
 DEFAULT_RECALL_PREVIEW_CHARS = 200
 MAX_BULK_MEMORY_IDS = 20
+RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
 
 
 def _wrap_system_reminder(body: str) -> str:
@@ -267,9 +269,12 @@ async def recall(
 
     memories = []
     for r in results:
-        preview = r.content[:preview_chars]
-        if preview_chars and len(r.content) > preview_chars:
-            preview += "..."
+        if preview_chars == 0:
+            preview = RECALL_CONTENT_ELIDED
+        else:
+            preview = r.content[:preview_chars]
+            if len(r.content) > preview_chars:
+                preview += "..."
         memories.append(
             f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} "
             f"decay={r.decay_score:.2f} trust={r.trust_score:.2f} "
@@ -292,8 +297,11 @@ async def get_memory(
 
     Args:
         memory_id: UUID of the memory to fetch
-        include_entities: include entities linked to the memory
-        include_relations: include relations for linked entities
+        include_entities: include entities linked to the memory in the output
+        include_relations: include relations for linked entities in the output.
+            Note: setting this to True implicitly fetches entities (needed to
+            traverse the graph), but they are only displayed when
+            include_entities=True is also set.
     """
     pg = _get_pg()
     try:
@@ -314,13 +322,8 @@ async def get_memory(
 
     if include_relations and entities:
         rel_repo = RelationRepository(pg)
-        seen_relation_ids: set[UUID] = set()
-        for entity in entities:
-            for relation in await rel_repo.get_relations(entity["name"], row["tenant"]):
-                if relation["id"] in seen_relation_ids:
-                    continue
-                seen_relation_ids.add(relation["id"])
-                relations.append(relation)
+        entity_names = [entity["name"] for entity in entities]
+        relations = await rel_repo.get_relations_for_entities(entity_names, row["tenant"])
 
     return _format_memory(
         row,
@@ -344,22 +347,21 @@ async def get_memories(
         include_entities: include entities linked to each memory
     """
     if len(memory_ids) > MAX_BULK_MEMORY_IDS:
-        return f"too many memory ids: max {MAX_BULK_MEMORY_IDS}, got {len(memory_ids)}"
+        raise ToolError(f"too many memory ids: max {MAX_BULK_MEMORY_IDS}, got {len(memory_ids)}")
 
+    pg = _get_pg()
     valid_ids, invalid_ids = _parse_memory_ids(memory_ids)
     rows = []
     if valid_ids:
-        pg = _get_pg()
         mem_repo = MemoryRepository(pg)
         rows = await mem_repo.get_by_ids(valid_ids)
     by_id = {str(row["id"]): row for row in rows}
 
     entities_by_id: dict[str, list[dict[str, Any]]] = {}
     if include_entities and rows:
-        pg = _get_pg()
         ent_repo = EntityRepository(pg)
-        for row in rows:
-            entities_by_id[str(row["id"])] = await ent_repo.get_memory_entities(row["id"])
+        grouped = await ent_repo.get_entities_for_memories([row["id"] for row in rows])
+        entities_by_id = {str(memory_id): entities for memory_id, entities in grouped.items()}
 
     output = []
     invalid = set(invalid_ids)

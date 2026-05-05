@@ -110,6 +110,7 @@ rows = await repo.soft_delete(memory_id)
 | `delete()` | Delete an entity by name |
 | `link_memory()` | Create memory-entity association |
 | `get_memory_entities()` | Get all entities linked to a memory |
+| `get_entities_for_memories()` | Batch get entities linked to multiple memories |
 | `count()` | Count entities, optionally filtered by tenant |
 
 ### RelationRepository
@@ -119,6 +120,7 @@ rows = await repo.soft_delete(memory_id)
 | `upsert()` | Create or update a relation by entity IDs |
 | `upsert_by_name()` | Create relation using entity names (joins internally) |
 | `get_relations()` | Get relations for an entity (outgoing, incoming, or both) |
+| `get_relations_for_entities()` | Batch get relations touching any of several entities |
 | `delete()` | Delete a relation by ID |
 | `count()` | Count total relations |
 
