@@ -49,6 +49,14 @@ _GET_MEMORY_ENTITIES = """
     WHERE me.memory_id = %s;
 """
 
+_GET_ENTITIES_FOR_MEMORIES = """
+    SELECT me.memory_id, e.id, e.name, e.entity_type
+    FROM memory_entities me
+    JOIN entities e ON e.id = me.entity_id
+    WHERE me.memory_id = ANY(%s::uuid[])
+    ORDER BY me.memory_id, e.name;
+"""
+
 _COUNT = "SELECT count(*) as cnt FROM entities"
 
 _GET_ENTITY_IDS_FOR_MEMORY = """
@@ -76,14 +84,17 @@ class EntityRepository:
         embedding: list[float] | None = None,
         embedding_dim: int | None = None,
     ) -> UUID:
-        row = await self._db.execute_one(_UPSERT, {
-            "name": name,
-            "type": entity_type,
-            "tenant": tenant,
-            "meta": Jsonb(metadata or {}),
-            "emb": embedding,
-            "dim": embedding_dim,
-        })
+        row = await self._db.execute_one(
+            _UPSERT,
+            {
+                "name": name,
+                "type": entity_type,
+                "tenant": tenant,
+                "meta": Jsonb(metadata or {}),
+                "emb": embedding,
+                "dim": embedding_dim,
+            },
+        )
         return row["id"]
 
     async def get_by_name(self, name: str, tenant: str = "default") -> dict[str, Any] | None:
@@ -109,6 +120,16 @@ class EntityRepository:
 
     async def get_memory_entities(self, memory_id: UUID) -> list[dict[str, Any]]:
         return await self._db.execute(_GET_MEMORY_ENTITIES, (memory_id,))
+
+    async def get_entities_for_memories(self, memory_ids: list[UUID]) -> dict[UUID, list[dict[str, Any]]]:
+        if not memory_ids:
+            return {}
+
+        rows = await self._db.execute(_GET_ENTITIES_FOR_MEMORIES, (memory_ids,))
+        grouped: dict[UUID, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(row["memory_id"], []).append(row)
+        return grouped
 
     async def get_entity_ids_for_memory(self, memory_id: UUID) -> list[UUID]:
         rows = await self._db.execute(_GET_ENTITY_IDS_FOR_MEMORY, (memory_id,))
