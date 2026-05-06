@@ -25,7 +25,7 @@ _LIST_BY_NAME_NO_SINCE = """
     SELECT id, name, type, value, tags, created_at
     FROM metrics_events
     WHERE name = %s
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT %s;
 """
 
@@ -33,14 +33,13 @@ _LIST_BY_NAME_SINCE = """
     SELECT id, name, type, value, tags, created_at
     FROM metrics_events
     WHERE name = %s AND created_at >= %s
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT %s;
 """
 
 _PURGE_OLDER = """
     DELETE FROM metrics_events
-    WHERE created_at < now() - make_interval(days => %s)
-    RETURNING id;
+    WHERE created_at < now() - make_interval(days => %s);
 """
 
 
@@ -64,12 +63,15 @@ class MetricsRepository:
     ) -> None:
         # ``metric_type`` rather than ``type`` to avoid shadowing the Python builtin.
         # The DB column is still named ``type``; the rename is local to the API.
-        await self._db.execute(_INSERT, {
-            "name": name,
-            "type": metric_type,
-            "value": value,
-            "tags": Jsonb(tags),
-        })
+        await self._db.execute(
+            _INSERT,
+            {
+                "name": name,
+                "type": metric_type,
+                "value": value,
+                "tags": Jsonb(tags),
+            },
+        )
 
     async def list_by_name(
         self,
@@ -82,5 +84,6 @@ class MetricsRepository:
         return await self._db.execute(_LIST_BY_NAME_SINCE, (name, since, limit))
 
     async def purge_older_than(self, days: int) -> int:
-        rows = await self._db.execute(_PURGE_OLDER, (days,))
-        return len(rows)
+        async with self._db.acquire() as conn:
+            cursor = await conn.execute(_PURGE_OLDER, (days,))
+            return max(cursor.rowcount, 0)

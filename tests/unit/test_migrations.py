@@ -18,29 +18,45 @@ from synapto.db.migrations import (
     run_migrations,
 )
 
+TMP_MIGRATION_FILENAMES = ("001_create_foo.sql", "002_add_bar.sql")
+
 
 @pytest.fixture
 def tmp_migrations(tmp_path):
     """Create a temporary migrations directory with test SQL files."""
     m1 = tmp_path / "001_create_foo.sql"
-    m1.write_text(dedent("""\
+    m1.write_text(
+        dedent("""\
         -- migrate:up
         CREATE TABLE IF NOT EXISTS test_foo (id SERIAL PRIMARY KEY, name TEXT);
 
         -- migrate:down
         DROP TABLE IF EXISTS test_foo;
-    """))
+    """)
+    )
 
     m2 = tmp_path / "002_add_bar.sql"
-    m2.write_text(dedent("""\
+    m2.write_text(
+        dedent("""\
         -- migrate:up
         ALTER TABLE test_foo ADD COLUMN IF NOT EXISTS bar TEXT;
 
         -- migrate:down
         ALTER TABLE test_foo DROP COLUMN IF EXISTS bar;
-    """))
+    """)
+    )
 
     return tmp_path
+
+
+async def _cleanup_tmp_migration_state(pg) -> None:
+    """Remove only the temp migration artifacts created by this test module."""
+    await get_applied_migrations(pg)  # ensures synapto_migrations exists
+    await pg.execute("DROP TABLE IF EXISTS test_foo;")
+    await pg.execute(
+        "DELETE FROM synapto_migrations WHERE filename = ANY(%s);",
+        (list(TMP_MIGRATION_FILENAMES),),
+    )
 
 
 class TestMigrationParsing:
@@ -71,6 +87,12 @@ class TestMigrationParsing:
 
 
 class TestMigrationRunner:
+    @pytest.fixture(autouse=True)
+    async def clean_tmp_migrations(self, pg):
+        await _cleanup_tmp_migration_state(pg)
+        yield
+        await _cleanup_tmp_migration_state(pg)
+
     async def test_migrate_up_applies_all(self, pg, tmp_migrations):
         applied = await migrate_up(pg, tmp_migrations)
         assert len(applied) == 2
@@ -95,8 +117,7 @@ class TestMigrationRunner:
 
         # table should still exist but without bar column
         rows = await pg.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'test_foo' AND column_name = 'bar';"
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'test_foo' AND column_name = 'bar';"
         )
         assert len(rows) == 0
 
@@ -155,7 +176,5 @@ class TestRunMigrationsCompat:
     async def test_tables_exist_after_migration(self, pg):
         await run_migrations(pg)
         for table in ("memories", "entities", "relations", "memory_entities"):
-            rows = await pg.execute(
-                "SELECT tablename FROM pg_tables WHERE tablename = %s;", (table,)
-            )
+            rows = await pg.execute("SELECT tablename FROM pg_tables WHERE tablename = %s;", (table,))
             assert len(rows) == 1, f"table {table} not found"

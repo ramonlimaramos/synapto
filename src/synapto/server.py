@@ -100,10 +100,13 @@ async def _lifespan(server):
     try:
         yield
     finally:
+        metrics_backend = _metrics_backend
+        _metrics_backend = None
+        set_registry(None)
         # Drain pending metric writes BEFORE the pool closes so in-flight
         # inserts don't fail against a torn-down connection.
-        if _metrics_backend:
-            await _metrics_backend.close()
+        if metrics_backend:
+            await metrics_backend.close()
         if _cache:
             await _cache.close()
         if _pg:

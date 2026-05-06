@@ -46,9 +46,7 @@ class TestMetricsRepository:
         assert row["value"] == pytest.approx(3.0)
         assert row["tags"] == {"tenant": "acme"}
 
-    async def test_empty_tags_persisted_as_empty_jsonb(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_empty_tags_persisted_as_empty_jsonb(self, metrics_table: PostgresClient) -> None:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
@@ -69,9 +67,7 @@ class TestMetricsRepository:
         assert row is not None
         assert row["tags"] == tags
 
-    async def test_list_by_name_returns_rows_in_created_at_desc(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_list_by_name_returns_rows_in_created_at_desc(self, metrics_table: PostgresClient) -> None:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
@@ -83,9 +79,19 @@ class TestMetricsRepository:
         # most recent insert (value=2) must come first
         assert [r["value"] for r in rows] == [pytest.approx(2.0), pytest.approx(1.0), pytest.approx(0.0)]
 
-    async def test_purge_older_than_deletes_only_old_rows(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_list_by_name_tiebreaks_equal_timestamps_by_id_desc(self, metrics_table: PostgresClient) -> None:
+        from synapto.repositories.metrics import MetricsRepository
+
+        repo = MetricsRepository(metrics_table)
+        for i in range(3):
+            await repo.insert(name="same.timestamp", metric_type="counter", value=float(i), tags={})
+
+        await metrics_table.execute("UPDATE metrics_events SET created_at = '2026-01-01T00:00:00Z';")
+
+        rows = await repo.list_by_name("same.timestamp")
+        assert [r["value"] for r in rows] == [pytest.approx(2.0), pytest.approx(1.0), pytest.approx(0.0)]
+
+    async def test_purge_older_than_deletes_only_old_rows(self, metrics_table: PostgresClient) -> None:
         from synapto.repositories.metrics import MetricsRepository
 
         repo = MetricsRepository(metrics_table)
@@ -105,9 +111,7 @@ class TestMetricsRepository:
 
 
 class TestPostgresMetricsBackend:
-    async def test_emit_schedules_insert_in_running_loop(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_emit_schedules_insert_in_running_loop(self, metrics_table: PostgresClient) -> None:
         from synapto.telemetry.backends.postgres import PostgresMetricsBackend
         from synapto.telemetry.metrics import MetricEvent
 
@@ -131,17 +135,13 @@ class TestPostgresMetricsBackend:
         assert row["value"] == pytest.approx(42.5)
         assert row["tags"] == {"outcome": "ok"}
 
-    async def test_emit_keeps_strong_reference_so_task_is_not_gc_dropped(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_emit_keeps_strong_reference_so_task_is_not_gc_dropped(self, metrics_table: PostgresClient) -> None:
         """Without keeping a reference, asyncio may GC the task before it runs."""
         from synapto.telemetry.backends.postgres import PostgresMetricsBackend
         from synapto.telemetry.metrics import MetricEvent
 
         backend = PostgresMetricsBackend(metrics_table)
-        backend.emit(
-            MetricEvent(name="ref.test", type="counter", value=1.0, tags={})
-        )
+        backend.emit(MetricEvent(name="ref.test", type="counter", value=1.0, tags={}))
 
         # The task must be tracked the moment emit() returns.
         assert len(backend._tasks) == 1
@@ -169,11 +169,44 @@ class TestPostgresMetricsBackend:
         rows = await metrics_table.execute("SELECT count(*) AS n FROM metrics_events WHERE name = 'burst';")
         assert rows[0]["n"] == 2
 
-    async def test_close_is_idempotent_and_safe_when_empty(
-        self, metrics_table: PostgresClient
-    ) -> None:
+    async def test_emit_after_close_drops_without_scheduling(self, metrics_table: PostgresClient) -> None:
+        from synapto.telemetry.backends.postgres import PostgresMetricsBackend
+        from synapto.telemetry.metrics import MetricEvent
+
+        backend = PostgresMetricsBackend(metrics_table)
+        await backend.close()
+        backend.emit(MetricEvent(name="after.close", type="counter", value=1.0, tags={}))
+
+        assert backend._dropped_count == 1
+        assert len(backend._tasks) == 0
+
+        rows = await metrics_table.execute("SELECT count(*) AS n FROM metrics_events WHERE name = 'after.close';")
+        assert rows[0]["n"] == 0
+
+    async def test_close_is_idempotent_and_safe_when_empty(self, metrics_table: PostgresClient) -> None:
         from synapto.telemetry.backends.postgres import PostgresMetricsBackend
 
         backend = PostgresMetricsBackend(metrics_table)
         await backend.close()  # nothing in flight, must be a no-op
         await backend.close()  # second call also safe
+
+    async def test_close_cancels_stragglers_after_timeout(
+        self, metrics_table: PostgresClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from synapto.telemetry.backends import postgres as backend_mod
+        from synapto.telemetry.metrics import MetricEvent
+
+        async def slow_insert(*args, **kwargs) -> None:
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(backend_mod, "DRAIN_TIMEOUT_SECONDS", 0.01)
+        backend = backend_mod.PostgresMetricsBackend(metrics_table)
+        monkeypatch.setattr(backend._repo, "insert", slow_insert)
+
+        backend.emit(MetricEvent(name="slow.metric", type="counter", value=1.0, tags={}))
+        await backend.close()
+
+        assert backend._closed is True
+        assert len(backend._tasks) == 0

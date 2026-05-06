@@ -57,8 +57,16 @@ class PostgresMetricsBackend:
         self._repo = MetricsRepository(pg)
         self._tasks: set[asyncio.Task[None]] = set()
         self._dropped_count: int = 0
+        self._closed: bool = False
 
     def emit(self, event: MetricEvent) -> None:
+        if self._closed:
+            self._record_drop(
+                "postgres metrics backend is closed, dropping event %s",
+                event.name,
+            )
+            return
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -71,13 +79,11 @@ class PostgresMetricsBackend:
         # Backpressure: stop scheduling once the inflight ceiling is reached.
         # Periodic warning keeps the dropped count visible without log spam.
         if len(self._tasks) >= MAX_INFLIGHT_TASKS:
-            self._dropped_count += 1
-            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
-                logger.warning(
-                    "postgres metrics backend at capacity (%d in-flight); dropped %d total",
-                    len(self._tasks),
-                    self._dropped_count,
-                )
+            self._record_drop(
+                "postgres metrics backend at capacity (%d in-flight); dropped %d total",
+                len(self._tasks),
+                None,
+            )
             return
 
         task = loop.create_task(self._safe_insert(event))
@@ -93,25 +99,23 @@ class PostgresMetricsBackend:
         cancelled rather than awaited indefinitely so server shutdown stays
         responsive.
         """
+        self._closed = True
         if not self._tasks:
             return
 
         pending = list(self._tasks)
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True),
-                timeout=DRAIN_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            stragglers = [t for t in pending if not t.done()]
-            for t in stragglers:
-                t.cancel()
+        done, stragglers = await asyncio.wait(pending, timeout=DRAIN_TIMEOUT_SECONDS)
+        if stragglers:
+            for task in stragglers:
+                task.cancel()
+            await asyncio.gather(*stragglers, return_exceptions=True)
             logger.warning(
                 "postgres metrics backend drained %d/%d tasks within %.1fs; cancelled the rest",
-                len(pending) - len(stragglers),
+                len(done),
                 len(pending),
                 DRAIN_TIMEOUT_SECONDS,
             )
+        self._tasks.difference_update(pending)
 
     async def _safe_insert(self, event: MetricEvent) -> None:
         try:
@@ -124,3 +128,9 @@ class PostgresMetricsBackend:
         except Exception:
             # Telemetry must never break the request path. Log and move on.
             logger.warning("failed to persist metric %s", event.name, exc_info=True)
+
+    def _record_drop(self, message: str, *args: object) -> None:
+        self._dropped_count += 1
+        if self._dropped_count == 1 or self._dropped_count % 100 == 0:
+            rendered_args = tuple(self._dropped_count if arg is None else arg for arg in args)
+            logger.warning(message, *rendered_args)

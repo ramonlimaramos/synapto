@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS metrics_events (
 
 -- Composite index drives `synapto metrics summary --tool X --since 1h` (T8).
 CREATE INDEX IF NOT EXISTS idx_metrics_events_name_created
-    ON metrics_events (name, created_at DESC);
+    ON metrics_events (name, created_at DESC, id DESC);
 
 -- Standalone index drives the retention purge: `DELETE WHERE created_at < ...`
 -- has no name predicate and cannot use the composite above efficiently.
