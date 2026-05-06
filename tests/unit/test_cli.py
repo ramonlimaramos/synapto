@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from click.testing import CliRunner
+
 from synapto.cli import _detect_mcp_clients, _write_mcp_config
 
 
@@ -90,3 +92,23 @@ class TestWriteMcpConfig:
         assert config_path.exists()
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["command"] == "uvx"
+
+
+class TestServeCommand:
+    def test_serve_disables_fastmcp_banner(self, monkeypatch):
+        """FastMCP's Rich banner bypasses logging, so serve must suppress it."""
+        from synapto import server
+        from synapto.cli import main
+
+        calls = []
+
+        class DummyMCP:
+            def run(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(server, "mcp", DummyMCP())
+
+        result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 0
+        assert calls == [{"show_banner": False}]

@@ -135,6 +135,6 @@ jobs:
 
             or with auto-updates (recommended):
             ```json
-            { "command": "uvx", "args": ["synapto", "serve"] }
+            { "command": "uvx", "args": ["--refresh", "synapto", "serve"] }
             ```
           files: dist/*
