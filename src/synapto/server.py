@@ -30,7 +30,12 @@ from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
-from synapto.telemetry import instrumented_tool
+from synapto.telemetry import (
+    MetricsRegistry,
+    PostgresMetricsBackend,
+    instrumented_tool,
+    set_registry,
+)
 
 logger = logging.getLogger("synapto.server")
 
@@ -38,6 +43,7 @@ logger = logging.getLogger("synapto.server")
 _pg: PostgresClient | None = None
 _cache: RedisCache | None = None
 _provider: EmbeddingProvider | None = None
+_metrics_backend: PostgresMetricsBackend | None = None
 _config = None
 
 
@@ -62,7 +68,7 @@ def _get_provider() -> EmbeddingProvider:
 @asynccontextmanager
 async def _lifespan(server):
     """Startup/shutdown lifecycle for the Synapto MCP server."""
-    global _pg, _cache, _provider, _config
+    global _pg, _cache, _provider, _metrics_backend, _config
 
     _config = load_config()
     logger.info("synapto config loaded (pg=%s, redis=%s)", _config.pg_dsn, _config.redis_url)
@@ -70,6 +76,15 @@ async def _lifespan(server):
     _pg = PostgresClient(_config.pg_dsn)
     await _pg.connect()
     await run_migrations(_pg)
+
+    # Mount the Postgres-backed metrics registry now that the pool is open.
+    # CLI commands that don't go through this lifespan keep the default
+    # LogMetricsBackend (works without a DB). The backend reference is held
+    # globally so the shutdown branch can drain pending inserts before the
+    # connection pool closes underneath them.
+    _metrics_backend = PostgresMetricsBackend(_pg)
+    set_registry(MetricsRegistry(backend=_metrics_backend))
+    logger.info("metrics backend: postgres")
 
     _cache = RedisCache(_config.redis_url)
     await _cache.connect()
@@ -85,6 +100,13 @@ async def _lifespan(server):
     try:
         yield
     finally:
+        metrics_backend = _metrics_backend
+        _metrics_backend = None
+        set_registry(None)
+        # Drain pending metric writes BEFORE the pool closes so in-flight
+        # inserts don't fail against a torn-down connection.
+        if metrics_backend:
+            await metrics_backend.close()
         if _cache:
             await _cache.close()
         if _pg:
