@@ -138,7 +138,10 @@ def init(pg_dsn: str, interactive: bool) -> None:
 def serve() -> None:
     """Start the Synapto MCP server (stdio transport)."""
     from synapto.server import mcp
-    mcp.run()
+
+    # Keep stderr machine-readable. FastMCP's Rich banner bypasses logging and
+    # otherwise pollutes the JSON log stream used by MCP stdio deployments.
+    mcp.run(show_banner=False)
 
 
 @main.command()

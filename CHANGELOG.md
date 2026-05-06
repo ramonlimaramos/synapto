@@ -6,9 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-06
+
+### Added
+
+- **Claude Code memory migration parser** with auto-detection for imported native Claude Code memories, making `synapto import` easier to use with existing agent memory files.
+- **structured JSON logging foundation** via `structlog` + `orjson`, giving Synapto consistent machine-readable stderr logs.
+- **metrics primitives and instrumentation** including a process-wide registry, log backend, async timing helper, per-tool call counters, latency histograms, and a Postgres metrics backend for persisted tool telemetry.
+- **full MCP memory retrieval** via `get_memory` and `get_memories`, enabling two-stage retrieval where `recall` can return compact previews and agents can fetch complete content only for selected memories.
+- **configurable recall previews** with `preview_chars`, plus `tenant` and `created_at` in recall output so agents can disambiguate results before fetching full records.
+
+### Fixed
+
+- **FastMCP startup banner suppression** for `synapto serve`; the Rich banner and update notice no longer pollute stderr with non-JSON lines, preserving structured log hygiene for MCP stdio deployments (#28).
+- **Postgres telemetry backend shutdown behavior** now drains or cancels in-flight writes before the pool closes, rejects late emits after shutdown, and resets the process registry during server teardown.
+- **metrics retention purge efficiency** by using the database cursor row count instead of materializing every deleted metric ID in Python.
+- **deterministic metric listing** by ordering equal timestamps with `id DESC`.
+- **migration test isolation** for temporary test migrations, avoiding stale local rows from interrupted test runs.
+
+### Security
+
+- **CI dependency audit stability** by constraining `pip>=26.1` in the development extras to avoid the known vulnerable pip version bundled by older uv-created environments.
+
 ### Documentation
 
 - **install snippets use `uvx --refresh`** so users actually receive new releases on Claude Code / Cursor restart — the previous snippets relied on `uvx` reusing its package cache, which meant a published Synapto release could go unnoticed until the cache expired. README, `docs/claude-code.md`, and `docs/cursor.md` now recommend the `--refresh` flag, document the startup tradeoff, and describe the manual `uv cache clean synapto` escape hatch. Also explains why a full Claude Code quit is required to pick up a new version mid-session.
+- **release notes auto-update snippet** now also recommends `uvx --refresh`, matching the install docs.
 
 ## [0.2.0] - 2026-04-22
 
