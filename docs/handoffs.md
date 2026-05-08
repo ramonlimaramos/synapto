@@ -2,8 +2,9 @@
 
 Synapto can coordinate work between LLM agents, IDE assistants, and coding
 sessions without adding a separate task database. A handoff is a normal Synapto
-memory with structured metadata. Agents discover it with `recall`, fetch the
-complete packet with `get_memory`, and append follow-up memories with `remember`.
+memory with structured metadata. Agents discover candidates with `recall`, fetch
+the complete packet with `get_memory`, verify the metadata, and append follow-up
+memories with `remember`.
 
 This is advisory coordination, not a hard lock. It works even when the sender
 and receiver are never online at the same time.
@@ -22,8 +23,9 @@ The MVP stores handoffs in the existing `memories` table:
 | `metadata.schema_version` | `1` |
 
 No migration is required. The metadata is JSONB and can evolve without changing
-the schema. Later versions can add deterministic metadata queries or claim tools
-if advisory handoffs are not enough.
+the schema. Current inbox discovery uses `recall`, which is ranked full-text and
+semantic search. It is not a deterministic metadata filter. Later versions can
+add JSONB metadata queries or claim tools if advisory handoffs are not enough.
 
 ## Metadata Schema
 
@@ -110,7 +112,7 @@ Manual equivalent:
 
 ```text
 recall(
-  "kind:agent_handoff to_agent:claude-opus-4.7 status:ready_for_implementation",
+  "agent_handoff agent handoff for claude-opus-4.7 status ready_for_implementation",
   tenant="synapto",
   depth_layer="working",
   limit=10,
@@ -118,6 +120,11 @@ recall(
 )
 get_memory("<handoff-id>")
 ```
+
+The `recall` call returns ranked candidates, not rows filtered by
+`metadata.to_agent` or `metadata.status`. Always inspect the full memory with
+`get_memory`, then verify `metadata.kind`, `metadata.to_agent`,
+`metadata.status`, and `metadata.task_id` before acting.
 
 If the handoff includes `context_ids`, fetch those too:
 
@@ -144,4 +151,3 @@ Handoffs are not locks. Agents should treat `files_scope` as an advisory claim:
    `status=ready_for_review`.
 5. Codex recalls handoffs for itself, fetches the update, reviews the work, and
    appends `status=completed` or `status=blocked`.
-

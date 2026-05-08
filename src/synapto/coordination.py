@@ -9,25 +9,39 @@ to fetch complete context.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
 from typing import Any
 
 HANDOFF_KIND = "agent_handoff"
 HANDOFF_SCHEMA_VERSION = 1
 DEFAULT_HANDOFF_LIMIT = 10
+_FORBIDDEN_INLINE_CHARS = ("\n", "\r", "`")
+_MAX_INLINE_LEN = 200
+_MAX_TEXT_LEN = 2_000
 
 
-def _split_csv(value: str | Iterable[str] | None) -> list[str]:
-    if value is None:
+def _safe_inline(value: str | None, *, name: str) -> str:
+    text = "" if value is None else str(value).strip()
+    if any(char in text for char in _FORBIDDEN_INLINE_CHARS):
+        raise ValueError(f"{name!r} must not contain newlines or backticks")
+    if len(text) > _MAX_INLINE_LEN:
+        raise ValueError(f"{name!r} exceeds {_MAX_INLINE_LEN} chars")
+    return text
+
+
+def _safe_text(value: str | None, *, name: str) -> str:
+    text = "" if value is None else str(value).strip()
+    if len(text) > _MAX_TEXT_LEN:
+        raise ValueError(f"{name!r} exceeds {_MAX_TEXT_LEN} chars")
+    return text
+
+
+def _split_csv(value: str | None, *, name: str = "value") -> list[str]:
+    if not value:
         return []
-    if isinstance(value, str):
-        items = value.split(",")
-    else:
-        items = value
-    return [item.strip() for item in items if item and item.strip()]
+    return [_safe_inline(item, name=name) for item in value.split(",") if item.strip()]
 
 
-def _coerce_limit(value: int | str) -> int:
+def _coerce_limit(value: int | str | None) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -44,8 +58,8 @@ def build_handoff_metadata(
     status: str,
     repo: str,
     branch: str = "",
-    files_scope: str | Iterable[str] | None = None,
-    context_ids: str | Iterable[str] | None = None,
+    files_scope: str | None = None,
+    context_ids: str | None = None,
     next_action: str = "",
     pr_url: str = "",
 ) -> dict[str, Any]:
@@ -55,22 +69,23 @@ def build_handoff_metadata(
     should create follow-up memories with the same ``task_id`` rather than
     mutating older handoffs.
     """
+    safe_pr_url = _safe_inline(pr_url, name="pr_url")
     metadata: dict[str, Any] = {
         "kind": HANDOFF_KIND,
         "schema_version": HANDOFF_SCHEMA_VERSION,
-        "task_id": task_id,
-        "from_agent": from_agent,
-        "to_agent": to_agent,
-        "phase": phase,
-        "status": status,
-        "repo": repo,
-        "branch": branch,
-        "files_scope": _split_csv(files_scope),
-        "context_ids": _split_csv(context_ids),
-        "next_action": next_action,
+        "task_id": _safe_inline(task_id, name="task_id"),
+        "from_agent": _safe_inline(from_agent, name="from_agent"),
+        "to_agent": _safe_inline(to_agent, name="to_agent"),
+        "phase": _safe_inline(phase, name="phase"),
+        "status": _safe_inline(status, name="status"),
+        "repo": _safe_inline(repo, name="repo"),
+        "branch": _safe_inline(branch, name="branch"),
+        "files_scope": _split_csv(files_scope, name="files_scope"),
+        "context_ids": _split_csv(context_ids, name="context_ids"),
+        "next_action": _safe_text(next_action, name="next_action"),
     }
-    if pr_url:
-        metadata["pr_url"] = pr_url
+    if safe_pr_url:
+        metadata["pr_url"] = safe_pr_url
     return metadata
 
 
@@ -107,10 +122,20 @@ def render_agent_handoff_prompt(
         next_action=next_action,
         pr_url=pr_url,
     )
-    routing_summary = summary or f"handoff:{task_id} {status} -> {to_agent}"
+    safe_summary = _safe_inline(summary, name="summary")
+    task_id = metadata["task_id"]
+    from_agent = metadata["from_agent"]
+    to_agent = metadata["to_agent"]
+    phase = metadata["phase"]
+    status = metadata["status"]
+    repo = metadata["repo"]
+    branch = metadata["branch"]
+    next_action = metadata["next_action"]
+    routing_summary = safe_summary or f"handoff:{task_id} {status} -> {to_agent}"
     routing_key = f"handoff:{task_id} {status} -> {to_agent}"
     scoped_files = metadata["files_scope"] or ["(none specified)"]
     context_hint = metadata["context_ids"] or ["(none specified)"]
+    next_action_display = json.dumps(next_action or "(not specified)", ensure_ascii=False)
 
     return f"""Create a Synapto cross-agent handoff memory.
 
@@ -143,7 +168,7 @@ agent. Include:
 - Decisions already made and why.
 - Files or areas in scope: {", ".join(scoped_files)}.
 - Relevant memory IDs to fetch with `get_memory`: {", ".join(context_hint)}.
-- Concrete next action: {next_action or "(not specified)"}.
+- Concrete next action: {next_action_display}.
 - Validation already run and validation still needed.
 - Open questions or blockers.
 
@@ -167,14 +192,24 @@ def render_handoff_inbox_prompt(
     limit: int | str = DEFAULT_HANDOFF_LIMIT,
 ) -> str:
     """Render an MCP prompt that teaches an agent to find assigned handoffs."""
+    agent = _safe_inline(agent, name="agent")
+    tenant = _safe_inline(tenant, name="tenant")
+    task_id = _safe_inline(task_id, name="task_id")
+    status = _safe_inline(status, name="status")
     safe_limit = _coerce_limit(limit)
-    query_parts = [f"kind:{HANDOFF_KIND}", f"to_agent:{agent}", f"status:{status}"]
+    query_parts = [HANDOFF_KIND, "agent", "handoff", "for", agent, "status", status]
     if task_id:
-        query_parts.append(f"task_id:{task_id}")
+        query_parts.extend(["task", task_id])
     query = " ".join(query_parts)
     tenant_arg = f"tenant=`{tenant}`" if tenant else "tenant=`<default>`"
 
     return f"""Find Synapto handoffs assigned to this agent using two-stage retrieval.
+
+Important: `recall` is ranked full-text and semantic search, not a structured
+metadata filter. The query below intentionally uses plain searchable terms.
+The returned memories are candidates; candidates are ranked by recall, not filtered by metadata fields.
+Verify `metadata.kind`, `metadata.to_agent`, `metadata.status`, and `metadata.task_id`
+after `get_memory(id)`.
 
 1. Call `recall` with:
    - query: `{query}`

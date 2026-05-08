@@ -25,6 +25,9 @@ Cross-agent handoffs:
   memory whose metadata includes `kind: "agent_handoff"` and a shared `task_id`.
 - When receiving a handoff, call `recall` with the task id or target agent,
   then call `get_memory(id)` to fetch the full state packet before acting.
+  `recall` returns ranked candidates, not deterministic metadata-filtered rows,
+  so verify `metadata.kind`, `metadata.to_agent`, `metadata.status`, and
+  `metadata.task_id` after fetching the full memory.
 - Treat `files_scope` as an advisory claim. Do not edit outside it unless the
   user expands the scope. Append follow-up memories instead of mutating old ones.
 

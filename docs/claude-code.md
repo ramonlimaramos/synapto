@@ -85,9 +85,9 @@ Check handoffs assigned to Claude:
 ```
 
 The prompts instruct Claude to use the normal Synapto tools: `remember` stores
-the handoff, `recall` discovers assigned work, and `get_memory` fetches the full
-handoff packet. See [Cross-agent handoffs](handoffs.md) for the metadata schema
-and safety rules.
+the handoff, `recall` discovers ranked candidate handoffs, and `get_memory`
+fetches the full handoff packet so Claude can verify metadata before acting. See
+[Cross-agent handoffs](handoffs.md) for the metadata schema and safety rules.
 
 ## Memory type alignment
 

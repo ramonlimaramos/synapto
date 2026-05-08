@@ -48,12 +48,16 @@ Cursor to follow the same workflow manually:
 
 ```text
 recall(
-  "kind:agent_handoff to_agent:cursor status:ready_for_implementation",
+  "agent_handoff agent handoff for cursor status ready_for_implementation",
   depth_layer="working",
   preview_chars=200
 )
 get_memory("<handoff-id>")
 ```
+
+`recall` returns ranked candidates instead of filtering by metadata fields, so
+verify `metadata.kind`, `metadata.to_agent`, and `metadata.status` after
+`get_memory`.
 
 Handoffs are normal project memories with structured metadata, so they remain
 portable across Codex, Claude Code, Cursor, and other MCP clients. See

@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from synapto.config import load_config
-from synapto.coordination import render_agent_handoff_prompt, render_handoff_inbox_prompt
+from synapto.coordination import DEFAULT_HANDOFF_LIMIT, render_agent_handoff_prompt, render_handoff_inbox_prompt
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
 from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
@@ -245,7 +245,7 @@ def handoff_inbox_prompt(
     tenant: str | None = None,
     task_id: str = "",
     status: str = "ready_for_implementation",
-    limit: int = 10,
+    limit: int | str = DEFAULT_HANDOFF_LIMIT,
 ) -> str:
     """Prompt an agent to discover assigned handoffs with two-stage retrieval."""
     return render_handoff_inbox_prompt(

@@ -57,9 +57,9 @@ async def test_handoff_inbox_prompt_renders_recall_instruction() -> None:
     )
 
     text = _prompt_text(result)
-    assert "to_agent:codex-gpt-5.5" in text
     assert "tenant=`synapto`" in text
-    assert "status:ready_for_review" in text
+    assert "agent handoff for codex-gpt-5.5" in text
+    assert "status ready_for_review" in text
+    assert "task synapto-123" in text
     assert "preview_chars=200" in text
     assert "get_memory(id)" in text
-
