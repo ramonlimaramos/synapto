@@ -49,6 +49,10 @@ synapto search "hello world"
 
 **Trust** — Mark memories as helpful or not. Bad info gets demoted 2x faster than good info gets promoted. Over time, your memory self-cleans.
 
+**Handoffs** — Coordinate Codex, Claude Code, Cursor, and other agents through
+metadata-tagged project memories. One agent can plan, another can implement, and
+a third can review by using `recall` plus `get_memory` to exchange full context.
+
 ## Quickstart
 
 ### Prerequisites
@@ -206,6 +210,7 @@ for r in results:
 |---|---|
 | [HRR deep dive](docs/hrr.md) | Compositional algebra, probe, reason, contradict |
 | [Trust scoring](docs/trust-scoring.md) | Feedback loop and contradiction workflow |
+| [Cross-agent handoffs](docs/handoffs.md) | Coordinate planning, implementation, and review across agents |
 | [Migrations](docs/migrations.md) | Versioned SQL files with rollback |
 | [Claude Code](docs/claude-code.md) | Setup and usage with Claude Code |
 | [Cursor](docs/cursor.md) | Setup and usage with Cursor |
