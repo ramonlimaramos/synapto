@@ -26,6 +26,11 @@ def test_server_instructions_cover_memory_types():
         assert mtype in SERVER_INSTRUCTIONS, f"instructions should mention {mtype!r}"
 
 
+def test_server_instructions_cover_handoffs():
+    for term in ("agent_handoff", "task_id", "get_memory", "files_scope"):
+        assert term in SERVER_INSTRUCTIONS, f"instructions should mention {term!r}"
+
+
 def test_fastmcp_instance_has_instructions_attached():
     """The FastMCP instance must expose the instructions so MCP clients can inject them."""
     assert mcp.instructions == SERVER_INSTRUCTIONS

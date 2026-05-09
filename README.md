@@ -20,6 +20,30 @@ Flat-file memory (`MEMORY.md`) doesn't scale — no search, no structure, no dec
 
 Works with Claude Code, Cursor, Windsurf, Codex, LangGraph, Agno, or any MCP client.
 
+## Cross-agent handoffs
+
+Pass work between Codex, Claude Code, Cursor, and other agents in plain
+language. Synapto stores the structured state under the hood, so the next agent
+can continue from a memory ID instead of a long pasted brief.
+
+```text
+You → Codex: Plan this feature and leave a handoff for Claude to implement.
+Codex → You: Handoff created for Claude: b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2
+
+You → Claude: Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Claude → You: I read the handoff, fetched its context, and can continue.
+```
+
+| What you say | What Synapto does |
+|---|---|
+| "Codex, leave this for Claude." | Stores a `project` memory with `metadata.kind = "agent_handoff"`. |
+| "Claude, continue from this handoff ID." | Fetches the full memory with `get_memory` and verifies the metadata. |
+| "Any handoffs for me?" | Uses `recall` to find ranked candidates, then fetches the relevant packet. |
+| "Mark it ready for review." | Appends a follow-up memory with the same `task_id`. |
+
+See [Cross-agent handoffs](docs/handoffs.md) for the lifecycle, schema, and
+Claude/Cursor recipes.
+
 ## Try it in 60 seconds
 
 **Docker:**
@@ -48,6 +72,10 @@ synapto search "hello world"
 **Decay** — Core memories live forever. Ephemeral notes fade in hours. Working context lasts about a week. Memories that get used stay alive; unused ones sink.
 
 **Trust** — Mark memories as helpful or not. Bad info gets demoted 2x faster than good info gets promoted. Over time, your memory self-cleans.
+
+**Handoffs** — Tell one agent to leave work for another in natural language.
+Synapto turns that into a structured handoff memory, and the receiver continues
+with `get_memory`, `context_ids`, and follow-up updates.
 
 ## Quickstart
 
@@ -206,6 +234,7 @@ for r in results:
 |---|---|
 | [HRR deep dive](docs/hrr.md) | Compositional algebra, probe, reason, contradict |
 | [Trust scoring](docs/trust-scoring.md) | Feedback loop and contradiction workflow |
+| [Cross-agent handoffs](docs/handoffs.md) | Coordinate planning, implementation, and review across agents |
 | [Migrations](docs/migrations.md) | Versioned SQL files with rollback |
 | [Claude Code](docs/claude-code.md) | Setup and usage with Claude Code |
 | [Cursor](docs/cursor.md) | Setup and usage with Cursor |

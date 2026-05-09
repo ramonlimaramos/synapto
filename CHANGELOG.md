@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **cross-agent handoff prompts and template tools** for coordinating Codex, Claude Code, Cursor, and other MCP clients through metadata-tagged project memories, plus documentation for the natural-language handoff UX, schema, and two-stage retrieval workflow.
+
 ## [0.2.1] - 2026-05-06
 
 ### Added

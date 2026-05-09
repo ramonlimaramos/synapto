@@ -30,6 +30,9 @@ dependencies = [
     # fastmcp still ships the vulnerable range transitively — drop this once
     # fastmcp upstream bumps authlib itself
     "authlib>=1.6.11",
+    # pinned to fix CVE-2026-42561 in python-multipart, pulled transitively
+    # by the MCP/FastAPI stack.
+    "python-multipart>=0.0.27",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",

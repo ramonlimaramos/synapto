@@ -67,6 +67,51 @@ Claude Code will automatically use Synapto tools. You can also ask directly:
 - "What depends on the agent.trigger topic?"
 - "Show me memory stats"
 
+## Cross-Agent Handoffs
+
+Use handoffs in natural language first:
+
+```text
+Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Don't edit yet — read it, verify metadata, fetch related context, then propose.
+```
+
+Claude should call `get_memory`, verify `metadata.kind = "agent_handoff"`, fetch
+any `context_ids`, and continue from the packet. If the user asks "any handoffs
+for you?" without an ID, Claude can use the inbox template plus `recall`.
+
+Synapto also exposes explicit MCP tools for agent coordination in Claude Code.
+Some MCP clients expose Synapto's `agent_handoff` and `handoff_inbox` prompts
+directly, but Claude Code sessions may surface only tools. Use the template
+tools below when you want to force the structured flow.
+
+Create a handoff template for another agent:
+
+```text
+mcp__synapto__agent_handoff_template(
+  task_id="synapto-telemetry-cli",
+  from_agent="codex-gpt-5.5",
+  to_agent="claude-opus-4.7",
+  phase="review",
+  status="ready_for_review"
+)
+```
+
+Render an inbox workflow for Claude:
+
+```text
+mcp__synapto__handoff_inbox_template(
+  agent="claude-opus-4.7",
+  tenant="synapto"
+)
+```
+
+The template tools instruct Claude to use the normal Synapto tools: `remember`
+stores the handoff, `recall` discovers ranked candidate handoffs, and
+`get_memory` fetches the full handoff packet so Claude can verify metadata before
+acting. See [Cross-agent handoffs](handoffs.md) for the metadata schema and
+safety rules.
+
 ## Memory type alignment
 
 Synapto's `memory_type` categories are **100% compatible** with Claude Code's native

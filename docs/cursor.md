@@ -39,3 +39,39 @@ Cursor's AI will automatically use `remember` and `recall` tools when appropriat
 - "Store this pattern in memory for future reference"
 - "Search memory for how we handle authentication"
 - "What entities are related to the user service?"
+
+## Cross-Agent Handoffs
+
+Use handoffs in natural language first:
+
+```text
+Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Don't edit yet — read it, verify metadata, fetch related context, then propose.
+```
+
+Cursor should call `get_memory`, verify `metadata.kind = "agent_handoff"`, fetch
+any `context_ids`, and continue from the packet. If the user asks "any handoffs
+for you?" without an ID, Cursor can use `handoff_inbox_template` or `recall`.
+
+If your Cursor MCP client exposes Synapto prompts, use `agent_handoff` to create
+a handoff and `handoff_inbox` to receive one. If prompts are not surfaced but
+tools are, use `agent_handoff_template` and `handoff_inbox_template` to render
+the same workflow instructions. If neither is surfaced, ask Cursor to follow the
+workflow manually:
+
+```text
+recall(
+  "agent_handoff agent handoff for cursor status ready_for_implementation",
+  depth_layer="working",
+  preview_chars=200
+)
+get_memory("<handoff-id>")
+```
+
+`recall` returns ranked candidates instead of filtering by metadata fields, so
+verify `metadata.kind`, `metadata.to_agent`, and `metadata.status` after
+`get_memory`.
+
+Handoffs are normal project memories with structured metadata, so they remain
+portable across Codex, Claude Code, Cursor, and other MCP clients. See
+[Cross-agent handoffs](handoffs.md) for the full schema.

@@ -13,6 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from synapto.config import load_config
+from synapto.coordination import DEFAULT_HANDOFF_LIMIT, render_agent_handoff_prompt, render_handoff_inbox_prompt
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
 from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
@@ -198,6 +199,120 @@ def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
 
 
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
+
+
+@mcp.prompt(
+    name="agent_handoff",
+    description="Create a structured handoff memory for another agent or IDE.",
+)
+def agent_handoff_prompt(
+    task_id: str,
+    from_agent: str,
+    to_agent: str,
+    phase: str = "planning",
+    status: str = "ready_for_implementation",
+    repo: str = "",
+    branch: str = "",
+    files_scope: str = "",
+    context_ids: str = "",
+    next_action: str = "",
+    summary: str = "",
+    pr_url: str = "",
+) -> str:
+    """Prompt an agent to append a structured cross-agent handoff memory."""
+    return render_agent_handoff_prompt(
+        task_id=task_id,
+        from_agent=from_agent,
+        to_agent=to_agent,
+        phase=phase,
+        status=status,
+        repo=repo,
+        branch=branch,
+        files_scope=files_scope,
+        context_ids=context_ids,
+        next_action=next_action,
+        summary=summary,
+        pr_url=pr_url,
+    )
+
+
+@mcp.prompt(
+    name="handoff_inbox",
+    description="Find and consume structured Synapto handoffs assigned to an agent.",
+)
+def handoff_inbox_prompt(
+    agent: str,
+    tenant: str | None = None,
+    task_id: str = "",
+    status: str = "ready_for_implementation",
+    limit: int | str = DEFAULT_HANDOFF_LIMIT,
+) -> str:
+    """Prompt an agent to discover assigned handoffs with two-stage retrieval."""
+    return render_handoff_inbox_prompt(
+        agent=agent,
+        tenant=tenant,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@mcp.tool
+def agent_handoff_template(
+    task_id: str,
+    from_agent: str,
+    to_agent: str,
+    phase: str = "planning",
+    status: str = "ready_for_implementation",
+    repo: str = "",
+    branch: str = "",
+    files_scope: str = "",
+    context_ids: str = "",
+    next_action: str = "",
+    summary: str = "",
+    pr_url: str = "",
+) -> str:
+    """Render instructions for creating a structured cross-agent handoff memory.
+
+    This mirrors the `agent_handoff` MCP prompt for clients that expose tools but
+    not MCP prompts, such as some Claude Code sessions.
+    """
+    return render_agent_handoff_prompt(
+        task_id=task_id,
+        from_agent=from_agent,
+        to_agent=to_agent,
+        phase=phase,
+        status=status,
+        repo=repo,
+        branch=branch,
+        files_scope=files_scope,
+        context_ids=context_ids,
+        next_action=next_action,
+        summary=summary,
+        pr_url=pr_url,
+    )
+
+
+@mcp.tool
+def handoff_inbox_template(
+    agent: str,
+    tenant: str | None = None,
+    task_id: str = "",
+    status: str = "ready_for_implementation",
+    limit: int | str = DEFAULT_HANDOFF_LIMIT,
+) -> str:
+    """Render instructions for finding assigned cross-agent handoff memories.
+
+    This mirrors the `handoff_inbox` MCP prompt for clients that expose tools but
+    not MCP prompts, such as some Claude Code sessions.
+    """
+    return render_handoff_inbox_prompt(
+        agent=agent,
+        tenant=tenant,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+    )
 
 
 @mcp.tool(meta=ALWAYS_LOAD_META)

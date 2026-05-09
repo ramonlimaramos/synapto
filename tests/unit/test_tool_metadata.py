@@ -14,6 +14,8 @@ DEFERRED_TOOLS = (
     "find_contradictions",
     "get_memory",
     "get_memories",
+    "agent_handoff_template",
+    "handoff_inbox_template",
     "graph_query",
     "list_entities_tool",
     "memory_stats",
