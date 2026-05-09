@@ -69,25 +69,37 @@ Claude Code will automatically use Synapto tools. You can also ask directly:
 
 ## Cross-Agent Handoffs
 
-Synapto exposes MCP prompts for agent coordination. In Claude Code, MCP prompts
-appear as slash commands with the format `/mcp__servername__promptname`.
+Synapto exposes MCP tools for agent coordination in Claude Code. Some MCP
+clients expose Synapto's `agent_handoff` and `handoff_inbox` prompts directly,
+but Claude Code sessions may surface only tools. Use the template tools below in
+Claude Code; they render the same instructions as the MCP prompts.
 
 Create a handoff for another agent:
 
 ```text
-/mcp__synapto__agent_handoff synapto-telemetry-cli claude-opus-4.7 codex-gpt-5.5 review ready_for_review
+mcp__synapto__agent_handoff_template(
+  task_id="synapto-telemetry-cli",
+  from_agent="codex-gpt-5.5",
+  to_agent="claude-opus-4.7",
+  phase="review",
+  status="ready_for_review"
+)
 ```
 
 Check handoffs assigned to Claude:
 
 ```text
-/mcp__synapto__handoff_inbox claude-opus-4.7 synapto
+mcp__synapto__handoff_inbox_template(
+  agent="claude-opus-4.7",
+  tenant="synapto"
+)
 ```
 
-The prompts instruct Claude to use the normal Synapto tools: `remember` stores
-the handoff, `recall` discovers ranked candidate handoffs, and `get_memory`
-fetches the full handoff packet so Claude can verify metadata before acting. See
-[Cross-agent handoffs](handoffs.md) for the metadata schema and safety rules.
+The template tools instruct Claude to use the normal Synapto tools: `remember`
+stores the handoff, `recall` discovers ranked candidate handoffs, and
+`get_memory` fetches the full handoff packet so Claude can verify metadata before
+acting. See [Cross-agent handoffs](handoffs.md) for the metadata schema and
+safety rules.
 
 ## Memory type alignment
 

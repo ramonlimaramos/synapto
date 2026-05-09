@@ -257,6 +257,64 @@ def handoff_inbox_prompt(
     )
 
 
+@mcp.tool
+def agent_handoff_template(
+    task_id: str,
+    from_agent: str,
+    to_agent: str,
+    phase: str = "planning",
+    status: str = "ready_for_implementation",
+    repo: str = "",
+    branch: str = "",
+    files_scope: str = "",
+    context_ids: str = "",
+    next_action: str = "",
+    summary: str = "",
+    pr_url: str = "",
+) -> str:
+    """Render instructions for creating a structured cross-agent handoff memory.
+
+    This mirrors the `agent_handoff` MCP prompt for clients that expose tools but
+    not MCP prompts, such as some Claude Code sessions.
+    """
+    return render_agent_handoff_prompt(
+        task_id=task_id,
+        from_agent=from_agent,
+        to_agent=to_agent,
+        phase=phase,
+        status=status,
+        repo=repo,
+        branch=branch,
+        files_scope=files_scope,
+        context_ids=context_ids,
+        next_action=next_action,
+        summary=summary,
+        pr_url=pr_url,
+    )
+
+
+@mcp.tool
+def handoff_inbox_template(
+    agent: str,
+    tenant: str | None = None,
+    task_id: str = "",
+    status: str = "ready_for_implementation",
+    limit: int | str = DEFAULT_HANDOFF_LIMIT,
+) -> str:
+    """Render instructions for finding assigned cross-agent handoff memories.
+
+    This mirrors the `handoff_inbox` MCP prompt for clients that expose tools but
+    not MCP prompts, such as some Claude Code sessions.
+    """
+    return render_handoff_inbox_prompt(
+        agent=agent,
+        tenant=tenant,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+    )
+
+
 @mcp.tool(meta=ALWAYS_LOAD_META)
 @instrumented_tool
 async def remember(

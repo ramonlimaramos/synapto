@@ -43,8 +43,10 @@ Cursor's AI will automatically use `remember` and `recall` tools when appropriat
 ## Cross-Agent Handoffs
 
 If your Cursor MCP client exposes Synapto prompts, use `agent_handoff` to create
-a handoff and `handoff_inbox` to receive one. If prompts are not surfaced, ask
-Cursor to follow the same workflow manually:
+a handoff and `handoff_inbox` to receive one. If prompts are not surfaced but
+tools are, use `agent_handoff_template` and `handoff_inbox_template` to render
+the same workflow instructions. If neither is surfaced, ask Cursor to follow the
+workflow manually:
 
 ```text
 recall(

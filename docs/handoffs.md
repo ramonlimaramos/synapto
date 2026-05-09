@@ -70,10 +70,21 @@ Clients that support MCP prompts can use the Synapto prompt:
   ready_for_implementation
 ```
 
-Claude Code exposes MCP prompts as slash commands in the form
-`/mcp__servername__promptname`. Other clients may expose prompts differently;
-if a client does not support MCP prompts, ask the agent to follow this document
-and call `remember` directly.
+Clients that expose tools but not MCP prompts can call the equivalent template
+tool and then follow the rendered instructions:
+
+```text
+mcp__synapto__agent_handoff_template(
+  task_id="synapto-telemetry-cli",
+  from_agent="codex-gpt-5.5",
+  to_agent="claude-opus-4.7",
+  phase="planning",
+  status="ready_for_implementation"
+)
+```
+
+If a client supports neither prompts nor template tools, ask the agent to follow
+this document and call `remember` directly.
 
 Manual equivalent:
 
@@ -106,6 +117,15 @@ Clients that support MCP prompts can use:
 
 ```text
 /mcp__synapto__handoff_inbox claude-opus-4.7 synapto
+```
+
+Clients that expose tools but not MCP prompts can call:
+
+```text
+mcp__synapto__handoff_inbox_template(
+  agent="claude-opus-4.7",
+  tenant="synapto"
+)
 ```
 
 Manual equivalent:
