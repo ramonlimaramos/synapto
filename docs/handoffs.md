@@ -1,13 +1,43 @@
 # Cross-Agent Handoffs
 
-Synapto can coordinate work between LLM agents, IDE assistants, and coding
-sessions without adding a separate task database. A handoff is a normal Synapto
-memory with structured metadata. Agents discover candidates with `recall`, fetch
-the complete packet with `get_memory`, verify the metadata, and append follow-up
+You speak normally. Synapto handles the structured handoff under the hood.
+
+```text
+You: Codex, plan this and leave a handoff for Claude to implement.
+Codex: Handoff created for Claude: b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2
+
+You: Claude, continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Claude: I read the handoff, fetched the related context, and can continue.
+```
+
+Synapto coordinates work between LLM agents, IDE assistants, and coding sessions
+without adding a separate task database. A handoff is a normal Synapto memory
+with structured metadata. Agents discover candidates with `recall`, fetch the
+complete packet with `get_memory`, verify the metadata, and append follow-up
 memories with `remember`.
 
 This is advisory coordination, not a hard lock. It works even when the sender
 and receiver are never online at the same time.
+
+## What Happens Under The Hood
+
+| Natural request | Agent behavior |
+|---|---|
+| "Leave this for Claude." | Sender creates a `project` / `working` memory with `metadata.kind = "agent_handoff"`. |
+| "Continue from this handoff ID." | Receiver calls `get_memory(id)`, verifies metadata, and fetches any `context_ids`. |
+| "Any handoffs for me?" | Receiver uses `handoff_inbox` or `recall` to find ranked candidates, then verifies them. |
+| "Send it back for review." | Agent appends a new handoff memory with the same `task_id` and a new `status`. |
+
+## Lifecycle
+
+1. **Create** — the sender summarizes goal, state, scope, decisions, validation,
+   and next action in a handoff memory.
+2. **Discover** — the receiver either opens a known memory ID with `get_memory`
+   or searches an inbox with `recall`.
+3. **Verify** — the receiver checks `metadata.kind`, `task_id`, `to_agent`,
+   `status`, `files_scope`, and supporting `context_ids` before acting.
+4. **Follow up** — progress is appended as a new memory with the same `task_id`;
+   older handoffs are not mutated.
 
 ## Storage Model
 
@@ -54,10 +84,24 @@ Common statuses:
 |---|---|
 | `ready_for_implementation` | Another agent should implement the plan |
 | `ready_for_review` | Another agent should review or validate the work |
+| `ready_for_validation` | Another agent should validate behavior, docs, or release readiness |
 | `blocked` | Work cannot continue without user or system input |
 | `completed` | Work is done and summarized |
 
+Teams can add their own statuses, but `ready_for_*`, `blocked`, and `completed`
+are the recommended shape because agents can infer intent from them.
+
 ## Creating A Handoff
+
+Most users should ask in natural language:
+
+```text
+Codex, plan this feature and leave a handoff for Claude to implement.
+```
+
+The agent should infer the fields, create the handoff, and return only the
+memory ID. The tools below are the explicit equivalents for clients or agents
+that need a structured entry point.
 
 Clients that support MCP prompts can use the Synapto prompt:
 
@@ -112,6 +156,16 @@ remember(
 ```
 
 ## Receiving A Handoff
+
+The simplest receiving flow is a memory ID:
+
+```text
+Claude, continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+```
+
+The receiving agent should call `get_memory(id)`, verify the handoff metadata,
+fetch any `context_ids`, and then continue or propose a plan. If the user does
+not provide an ID, use the inbox flow below.
 
 Clients that support MCP prompts can use:
 

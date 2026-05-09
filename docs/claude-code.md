@@ -69,12 +69,23 @@ Claude Code will automatically use Synapto tools. You can also ask directly:
 
 ## Cross-Agent Handoffs
 
-Synapto exposes MCP tools for agent coordination in Claude Code. Some MCP
-clients expose Synapto's `agent_handoff` and `handoff_inbox` prompts directly,
-but Claude Code sessions may surface only tools. Use the template tools below in
-Claude Code; they render the same instructions as the MCP prompts.
+Use handoffs in natural language first:
 
-Create a handoff for another agent:
+```text
+Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Don't edit yet — read it, verify metadata, fetch related context, then propose.
+```
+
+Claude should call `get_memory`, verify `metadata.kind = "agent_handoff"`, fetch
+any `context_ids`, and continue from the packet. If the user asks "any handoffs
+for you?" without an ID, Claude can use the inbox template plus `recall`.
+
+Synapto also exposes explicit MCP tools for agent coordination in Claude Code.
+Some MCP clients expose Synapto's `agent_handoff` and `handoff_inbox` prompts
+directly, but Claude Code sessions may surface only tools. Use the template
+tools below when you want to force the structured flow.
+
+Create a handoff template for another agent:
 
 ```text
 mcp__synapto__agent_handoff_template(
@@ -86,7 +97,7 @@ mcp__synapto__agent_handoff_template(
 )
 ```
 
-Check handoffs assigned to Claude:
+Render an inbox workflow for Claude:
 
 ```text
 mcp__synapto__handoff_inbox_template(

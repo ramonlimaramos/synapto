@@ -21,8 +21,14 @@ When to call `relate` and `graph_query`:
   graph can be traversed by `graph_query` (e.g. service A depends_on service B).
 
 Cross-agent handoffs:
+- Treat natural-language requests like "leave a handoff for Claude" or
+  "continue from this Synapto handoff ID" as handoff workflows. Do the
+  structured memory work under the hood instead of asking the user to build
+  metadata payloads.
 - When handing work to another agent or IDE, store a `project` / `working`
   memory whose metadata includes `kind: "agent_handoff"` and a shared `task_id`.
+- Return the new memory ID to the user so another agent can continue with
+  `get_memory(id)`.
 - When receiving a handoff, call `recall` with the task id or target agent,
   then call `get_memory(id)` to fetch the full state packet before acting.
   `recall` returns ranked candidates, not deterministic metadata-filtered rows,

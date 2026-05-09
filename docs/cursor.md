@@ -42,6 +42,17 @@ Cursor's AI will automatically use `remember` and `recall` tools when appropriat
 
 ## Cross-Agent Handoffs
 
+Use handoffs in natural language first:
+
+```text
+Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
+Don't edit yet — read it, verify metadata, fetch related context, then propose.
+```
+
+Cursor should call `get_memory`, verify `metadata.kind = "agent_handoff"`, fetch
+any `context_ids`, and continue from the packet. If the user asks "any handoffs
+for you?" without an ID, Cursor can use `handoff_inbox_template` or `recall`.
+
 If your Cursor MCP client exposes Synapto prompts, use `agent_handoff` to create
 a handoff and `handoff_inbox` to receive one. If prompts are not surfaced but
 tools are, use `agent_handoff_template` and `handoff_inbox_template` to render
