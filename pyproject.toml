@@ -33,6 +33,8 @@ dependencies = [
     # pinned to fix CVE-2026-42561 in python-multipart, pulled transitively
     # by the MCP/FastAPI stack.
     "python-multipart>=0.0.27",
+    # pinned to fix CVE-2026-44431/CVE-2026-44432, pulled transitively.
+    "urllib3>=2.7.0",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",
