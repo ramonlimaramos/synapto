@@ -14,6 +14,7 @@ DEFERRED_TOOLS = (
     "find_contradictions",
     "get_memory",
     "get_memories",
+    "update_memory",
     "agent_handoff_template",
     "handoff_inbox_template",
     "graph_query",
@@ -40,3 +41,16 @@ async def test_non_critical_tools_stay_deferred(name: str):
     so they do not bloat the LLM's tool list on every session."""
     tool = await mcp.get_tool(name)
     assert tool.meta is None, f"{name!r} should not carry alwaysLoad metadata"
+
+
+async def test_memory_tool_descriptions_document_hard_limits():
+    remember = await mcp.get_tool("remember")
+    update_memory = await mcp.get_tool("update_memory")
+    get_memories = await mcp.get_tool("get_memories")
+
+    assert "summary: optional short summary (max 255 chars)" in remember.description
+    assert "memory_type" in remember.description and "max 20 chars" in remember.description
+    assert "tenant" in remember.description and "max 100 chars" in remember.description
+    assert "depth_layer" in remember.description and "max 20 chars" in remember.description
+    assert "summary: optional replacement summary (max 255 chars)" in update_memory.description
+    assert "memory_ids: UUIDs of memories to fetch (max 20)" in get_memories.description
