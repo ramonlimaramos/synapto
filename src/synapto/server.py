@@ -124,6 +124,10 @@ ALWAYS_LOAD_META = {"alwaysLoad": True}
 MAX_RECALL_PREVIEW_CHARS = 1000
 DEFAULT_RECALL_PREVIEW_CHARS = 200
 MAX_BULK_MEMORY_IDS = 20
+MAX_SUMMARY_CHARS = 255
+MAX_MEMORY_TYPE_CHARS = 20
+MAX_TENANT_CHARS = 100
+MAX_DEPTH_LAYER_CHARS = 20
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
 
 
@@ -145,6 +149,33 @@ def _format_timestamp(value: datetime | None) -> str:
 
 def _format_json(value: dict[str, Any] | None) -> str:
     return json.dumps(value or {}, ensure_ascii=False, sort_keys=True)
+
+
+def _validate_max_chars(field: str, value: str | None, max_chars: int, *, guidance: str | None = None) -> None:
+    if value is None or len(value) <= max_chars:
+        return
+    message = f"{field} exceeds {max_chars} chars (got {len(value)})"
+    if guidance:
+        message += f" — {guidance}"
+    raise ToolError(message)
+
+
+def _validate_memory_fields(
+    *,
+    memory_type: str | None = None,
+    tenant: str | None = None,
+    depth_layer: str | None = None,
+    summary: str | None = None,
+) -> None:
+    _validate_max_chars("memory_type", memory_type, MAX_MEMORY_TYPE_CHARS)
+    _validate_max_chars("tenant", tenant, MAX_TENANT_CHARS)
+    _validate_max_chars("depth_layer", depth_layer, MAX_DEPTH_LAYER_CHARS)
+    _validate_max_chars(
+        "summary",
+        summary,
+        MAX_SUMMARY_CHARS,
+        guidance="pass the full text via 'content' and a short headline via 'summary'",
+    )
 
 
 def _format_memory(
@@ -329,17 +360,20 @@ async def remember(
     """Store a memory with optional entity extraction.
 
     Args:
-        content: the memory content to store
-        memory_type: category (general, user, feedback, project, reference)
-        tenant: project/tenant scope (defaults to config default)
-        depth_layer: core, stable, working, or ephemeral
-        summary: optional short summary
+        content: memory content to store (text; no Synapto length limit)
+        memory_type: category (general, user, feedback, project, reference; max 20 chars)
+        tenant: project/tenant scope (defaults to config default; max 100 chars)
+        depth_layer: core, stable, working, or ephemeral (max 20 chars)
+        summary: optional short summary (max 255 chars)
         metadata: optional JSON metadata
         extract_entities: auto-extract and link entities from content
     """
+    _validate_memory_fields(memory_type=memory_type, tenant=tenant, depth_layer=depth_layer, summary=summary)
+
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
+    _validate_memory_fields(tenant=t)
     repo = MemoryRepository(pg)
 
     embedding = await provider.embed_one(content)
@@ -374,6 +408,97 @@ async def remember(
 
     entity_count = len(entity_names)
     return f"stored memory {memory_id} ({depth_layer}, {entity_count} entities linked)"
+
+
+@mcp.tool
+@instrumented_tool
+async def update_memory(
+    memory_id: str,
+    content: str | None = None,
+    summary: str | None = None,
+    metadata_patch: dict[str, Any] | None = None,
+    append: str | None = None,
+) -> str:
+    """Update an existing memory without re-sending the whole record.
+
+    Args:
+        memory_id: UUID of the memory to update
+        content: replacement memory content (text; no Synapto length limit)
+        summary: optional replacement summary (max 255 chars)
+        metadata_patch: optional JSON object shallow-merged into existing metadata
+        append: text appended to the existing content (mutually exclusive with content)
+    """
+    if content is not None and append is not None:
+        raise ToolError("content and append are mutually exclusive; provide one or the other")
+    if content is None and summary is None and metadata_patch is None and append is None:
+        raise ToolError("provide at least one field to update")
+    if metadata_patch is not None and not isinstance(metadata_patch, dict):
+        raise ToolError("metadata_patch must be a JSON object")
+
+    _validate_memory_fields(summary=summary)
+
+    try:
+        parsed_id = UUID(memory_id)
+    except ValueError:
+        return f"invalid memory id: {memory_id}"
+
+    pg = _get_pg()
+    repo = MemoryRepository(pg)
+    row = await repo.get_by_id(parsed_id)
+    if not row:
+        return f"memory {memory_id} not found or deleted"
+
+    new_content = content
+    if append is not None:
+        new_content = row["content"] + append
+
+    embedding = None
+    embedding_dim = None
+    if new_content is not None:
+        provider = _get_provider()
+        embedding = await provider.embed_one(new_content)
+        embedding_dim = provider.dimension
+
+    updated = await repo.update(
+        parsed_id,
+        content=new_content,
+        embedding=embedding,
+        embedding_dim=embedding_dim,
+        summary=summary,
+        metadata_patch=metadata_patch,
+    )
+    if not updated:
+        return f"memory {memory_id} not found or deleted"
+
+    if new_content is not None:
+        entity_names = extract_entities_from_text(new_content)
+        provider = _get_provider()
+        ent_repo = EntityRepository(pg)
+        entity_ids = []
+        for entity_name in entity_names:
+            eid = await create_entity(pg, entity_name, "concept", updated["tenant"], provider=provider)
+            entity_ids.append(eid)
+        await ent_repo.replace_memory_links(parsed_id, entity_ids)
+
+        try:
+            hrr_vec = encode_fact(new_content, entity_names)
+            await repo.update_hrr(parsed_id, phases_to_bytes(hrr_vec), DEFAULT_DIM)
+            bank_name = f"{updated['tenant']}:{updated['type']}"
+            await rebuild_bank(pg, bank_name, updated["tenant"], type_filter=updated["type"])
+        except Exception as e:
+            logger.warning("post-update hrr refresh failed for %s: %s", parsed_id, e)
+
+    cache = _get_cache()
+    await cache.invalidate_memory(parsed_id)
+
+    changed = []
+    if new_content is not None:
+        changed.append("content")
+    if summary is not None:
+        changed.append("summary")
+    if metadata_patch is not None:
+        changed.append("metadata")
+    return f"updated memory {parsed_id} ({', '.join(changed)})"
 
 
 @mcp.tool(meta=ALWAYS_LOAD_META)

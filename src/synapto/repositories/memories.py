@@ -61,6 +61,34 @@ _GET_BY_IDS = """
 
 _UPDATE_HRR = "UPDATE memories SET hrr_vector = %s, hrr_dim = %s WHERE id = %s;"
 
+_UPDATE_MEMORY = """
+    UPDATE memories
+    SET
+        content = CASE WHEN %(content_provided)s THEN %(content)s ELSE content END,
+        summary = CASE WHEN %(summary_provided)s THEN %(summary)s ELSE summary END,
+        embedding = CASE WHEN %(embedding_provided)s THEN %(emb)s::vector ELSE embedding END,
+        embedding_dim = CASE WHEN %(dim_provided)s THEN %(dim)s ELSE embedding_dim END,
+        metadata = CASE
+            WHEN %(meta_provided)s THEN COALESCE(metadata, '{}'::jsonb) || %(meta)s::jsonb
+            ELSE metadata
+        END,
+        accessed_at = now()
+    WHERE id = %(id)s AND deleted_at IS NULL
+    RETURNING
+        id,
+        content,
+        summary,
+        type,
+        tenant,
+        depth_layer,
+        metadata,
+        decay_score,
+        trust_score,
+        access_count,
+        created_at,
+        accessed_at;
+"""
+
 _SOFT_DELETE = """
     UPDATE memories SET deleted_at = now()
     WHERE id = %s AND deleted_at IS NULL
@@ -179,6 +207,33 @@ class MemoryRepository:
 
     async def update_hrr(self, memory_id: UUID, hrr_vector: bytes, hrr_dim: int) -> None:
         await self._db.execute(_UPDATE_HRR, (hrr_vector, hrr_dim, memory_id))
+
+    async def update(
+        self,
+        memory_id: str | UUID,
+        *,
+        content: str | None = None,
+        embedding: list[float] | None = None,
+        embedding_dim: int | None = None,
+        summary: str | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        return await self._db.execute_one(
+            _UPDATE_MEMORY,
+            {
+                "id": memory_id,
+                "content_provided": content is not None,
+                "content": content,
+                "summary_provided": summary is not None,
+                "summary": summary,
+                "embedding_provided": embedding is not None,
+                "emb": embedding,
+                "dim_provided": embedding_dim is not None,
+                "dim": embedding_dim,
+                "meta_provided": metadata_patch is not None,
+                "meta": Jsonb(metadata_patch or {}),
+            },
+        )
 
     async def get_by_id(self, memory_id: str | UUID) -> dict[str, Any] | None:
         return await self._db.execute_one(_GET_BY_ID, (memory_id,))

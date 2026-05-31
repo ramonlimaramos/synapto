@@ -39,6 +39,10 @@ and receiver are never online at the same time.
 4. **Follow up** — progress is appended as a new memory with the same `task_id`;
    older handoffs are not mutated.
 
+Use `update_memory` for small corrections or appending clarifying text to a
+single memory. For state transitions between agents, prefer a new follow-up
+memory so the coordination trail stays auditable.
+
 ## Storage Model
 
 The MVP stores handoffs in the existing `memories` table:

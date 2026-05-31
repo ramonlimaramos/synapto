@@ -135,6 +135,7 @@ Restart your agent. Synapto tools appear automatically, and any future release w
 | `recall` | Search memories by meaning |
 | `get_memory` | Fetch the complete content and metadata for one recalled memory |
 | `get_memories` | Fetch complete content for multiple recalled memories |
+| `update_memory` | Replace, append, or patch fields on an existing memory |
 | `relate` | Link two entities ("Hermes" --[produces]--> "agent.messages") |
 | `forget` | Soft-delete a memory |
 | `trust_feedback` | Mark a memory as helpful or unhelpful |
@@ -143,6 +144,21 @@ Restart your agent. Synapto tools appear automatically, and any future release w
 | `list_entities` | Browse known entities |
 | `memory_stats` | View counts and distribution |
 | `maintain` | Run decay and cleanup |
+
+### Tool Field Limits
+
+Synapto validates known hard limits before hitting the database, so MCP clients
+get actionable errors instead of raw Postgres exceptions.
+
+| Field | Limit |
+|------|-------|
+| `content` | Text; no Synapto length limit |
+| `summary` | Max 255 characters |
+| `memory_type` | Max 20 characters |
+| `depth_layer` | Max 20 characters |
+| `tenant` | Max 100 characters |
+| `get_memories.memory_ids` | Max 20 IDs per call |
+| `recall.preview_chars` | Clamped to 0-1000 characters |
 
 ## CLI
 

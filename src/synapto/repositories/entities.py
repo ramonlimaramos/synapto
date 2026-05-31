@@ -42,6 +42,8 @@ _LINK_MEMORY = """
     VALUES (%s, %s) ON CONFLICT DO NOTHING;
 """
 
+_UNLINK_MEMORY_ENTITIES = "DELETE FROM memory_entities WHERE memory_id = %s;"
+
 _GET_MEMORY_ENTITIES = """
     SELECT e.id, e.name, e.entity_type
     FROM entities e
@@ -117,6 +119,11 @@ class EntityRepository:
 
     async def link_memory(self, memory_id: UUID, entity_id: UUID) -> None:
         await self._db.execute(_LINK_MEMORY, (memory_id, entity_id))
+
+    async def replace_memory_links(self, memory_id: UUID, entity_ids: list[UUID]) -> None:
+        await self._db.execute(_UNLINK_MEMORY_ENTITIES, (memory_id,))
+        if entity_ids:
+            await self._db.execute_many(_LINK_MEMORY, [(memory_id, entity_id) for entity_id in entity_ids])
 
     async def get_memory_entities(self, memory_id: UUID) -> list[dict[str, Any]]:
         return await self._db.execute(_GET_MEMORY_ENTITIES, (memory_id,))

@@ -18,6 +18,14 @@ from synapto.repositories.relations import RelationRepository
 TENANT = "test_memory_retrieval_tools"
 
 
+class DummyCache:
+    def __init__(self) -> None:
+        self.invalidated = []
+
+    async def invalidate_memory(self, memory_id):
+        self.invalidated.append(memory_id)
+
+
 async def _cleanup(pg):
     await pg.execute(
         "DELETE FROM memory_entities WHERE memory_id IN (SELECT id FROM memories WHERE tenant = %s);",
@@ -66,6 +74,117 @@ async def test_memory_repository_get_by_id_returns_full_record(pg, provider):
     assert row["metadata"] == {"source": "test"}
 
     await _cleanup(pg)
+
+
+async def test_memory_repository_update_merges_partial_fields(pg, provider):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "original content", summary="old summary")
+
+    row = await MemoryRepository(pg).update(
+        memory_id,
+        summary="new summary",
+        metadata_patch={"status": "updated", "reviewed": True},
+    )
+
+    assert row is not None
+    assert row["id"] == memory_id
+    assert row["content"] == "original content"
+    assert row["summary"] == "new summary"
+    assert row["metadata"] == {"source": "test", "status": "updated", "reviewed": True}
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_appends_content_and_invalidates_cache(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "first paragraph", summary="append target")
+    cache = DummyCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", cache)
+
+    output = await server.update_memory(str(memory_id), append="\nsecond paragraph")
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["content"] == "first paragraph\nsecond paragraph"
+    assert f"updated memory {memory_id}" in output
+    assert memory_id in cache.invalidated
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_replaces_entity_links_for_replaced_content(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "`OldEntity` is no longer relevant", summary="entity target")
+    ent_repo = EntityRepository(pg)
+    old_entity_id = await ent_repo.upsert("OldEntity", tenant=TENANT)
+    await ent_repo.link_memory(memory_id, old_entity_id)
+    cache = DummyCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", cache)
+
+    await server.update_memory(str(memory_id), content="`NewEntity` is the only relevant entity now")
+
+    entities = await ent_repo.get_memory_entities(memory_id)
+    entity_names = {entity["name"] for entity in entities}
+    assert "NewEntity" in entity_names
+    assert "OldEntity" not in entity_names
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_updates_summary_and_metadata_patch(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "unchanged content", summary="old summary")
+    cache = DummyCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_cache", cache)
+
+    output = await server.update_memory(
+        str(memory_id),
+        summary="new summary",
+        metadata_patch={"source": "updated", "status": "reviewed"},
+    )
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["content"] == "unchanged content"
+    assert row["summary"] == "new summary"
+    assert row["metadata"] == {"source": "updated", "status": "reviewed"}
+    assert f"updated memory {memory_id} (summary, metadata)" in output
+    assert memory_id in cache.invalidated
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_rejects_empty_patch():
+    with pytest.raises(ToolError, match="provide at least one field to update"):
+        await server.update_memory("00000000-0000-0000-0000-000000000000")
+
+
+async def test_update_memory_rejects_content_and_append_together():
+    with pytest.raises(ToolError, match="content and append are mutually exclusive"):
+        await server.update_memory(
+            "00000000-0000-0000-0000-000000000000",
+            content="replacement",
+            append="tail",
+        )
+
+
+async def test_remember_rejects_overlong_summary_before_database_access():
+    with pytest.raises(ToolError, match="summary exceeds 255 chars \\(got 256\\)"):
+        await server.remember("content", summary="x" * 256)
+
+
+async def test_update_memory_rejects_overlong_summary_before_database_access():
+    with pytest.raises(ToolError, match="summary exceeds 255 chars \\(got 256\\)"):
+        await server.update_memory("00000000-0000-0000-0000-000000000000", summary="x" * 256)
 
 
 async def test_get_memory_returns_complete_content_and_entities(pg, provider, monkeypatch):

@@ -36,6 +36,8 @@ Cross-agent handoffs:
   `metadata.task_id` after fetching the full memory.
 - Treat `files_scope` as an advisory claim. Do not edit outside it unless the
   user expands the scope. Append follow-up memories instead of mutating old ones.
+- Use `update_memory` for narrow corrections, summary fixes, metadata patches,
+  or appending clarifying text to an existing memory.
 
 Depth layers control decay:
 - core: forever (rules, identity)
@@ -44,4 +46,4 @@ Depth layers control decay:
 - ephemeral: hours (short-lived state)
 
 If `recall` returns a memory that conflicts with what you observe now, trust the
-current state and update or `forget` the stale memory.
+current state and call `update_memory` or `forget` for the stale memory.
