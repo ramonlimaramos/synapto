@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapto"
-version = "0.3.0"
+version = "0.4.0"
 description = "Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP"
 readme = "README.md"
 license = "MIT"
@@ -39,6 +39,9 @@ dependencies = [
     "idna>=3.15",
     # pinned to fix PYSEC-2026-161, pulled transitively by the MCP/FastAPI stack.
     "starlette>=1.0.1",
+    # pinned to fix PYSEC-2026-175/PYSEC-2026-177/PYSEC-2026-178/PYSEC-2026-179,
+    # pulled transitively by the MCP stack.
+    "PyJWT>=2.13.0",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",
@@ -62,10 +65,11 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "build>=1.0",
-    # pinned to fix CVE-2026-3219 in pip itself; uv bundles 26.0.1 by default
+    # pinned to fix CVE-2026-3219/PYSEC-2026-196 in pip itself; uv bundles older
+    # pip versions by default
     # and pip-audit flags it. drop this constraint once uv ships a venv with
-    # pip>=26.1 out of the box.
-    "pip>=26.1",
+    # pip>=26.1.2 out of the box.
+    "pip>=26.1.2",
 ]
 
 [project.scripts]
