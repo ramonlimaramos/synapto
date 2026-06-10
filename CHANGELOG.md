@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-10
+
+### Added
+
+- **incremental MCP memory updates** via `update_memory`, enabling agents to append to memory content, replace memory content, or patch memory metadata without re-sending the full record. Content updates refresh content-derived embedding, HRR, and entity links, while metadata-only updates avoid unnecessary recomputation.
+
+### Security
+
+- **dependency audit fixes** by constraining vulnerable transitive dependencies and dev-audit tooling dependencies: `idna>=3.15`, `starlette>=1.0.1`, `PyJWT>=2.13.0`, and `pip>=26.1.2`.
+
 ## [0.3.0] - 2026-05-11
 
 ### Added
