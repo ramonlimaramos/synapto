@@ -36,7 +36,7 @@ WITH semantic_search AS (
     FROM memories
     WHERE deleted_at IS NULL
       AND tenant = %(tenant)s
-      {{depth_filter}}
+      {{filters}}
     ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})
     LIMIT 20
 ),
@@ -50,7 +50,7 @@ keyword_search AS (
     WHERE deleted_at IS NULL
       AND tenant = %(tenant)s
       AND tsv @@ plainto_tsquery('english', %(query)s)
-      {{depth_filter}}
+      {{filters}}
     ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(query)s)) DESC
     LIMIT 20
 )
@@ -59,6 +59,7 @@ SELECT
     m.content,
     m.summary,
     m.type,
+    m.subtype,
     m.tenant,
     m.depth_layer,
     m.decay_score,
@@ -96,6 +97,7 @@ class SearchResult:
     content: str
     summary: str | None
     type: str
+    subtype: str | None
     tenant: str
     depth_layer: str
     decay_score: float
@@ -133,6 +135,7 @@ async def hybrid_search(
     query: str,
     tenant: str = "default",
     depth_layer: str | None = None,
+    subtype: str | None = None,
     limit: int = 10,
     rrf_k: int = 60,
 ) -> list[SearchResult]:
@@ -140,7 +143,7 @@ async def hybrid_search(
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
-    depth_filter = ""
+    filters = []
     params: dict[str, Any] = {
         "embedding": embedding,
         "query": query,
@@ -149,10 +152,13 @@ async def hybrid_search(
         "limit": limit * 2,  # fetch extra for HRR reranking
     }
     if depth_layer:
-        depth_filter = "AND depth_layer = %(depth_layer)s"
+        filters.append("AND depth_layer = %(depth_layer)s")
         params["depth_layer"] = depth_layer
+    if subtype:
+        filters.append("AND subtype = %(subtype)s")
+        params["subtype"] = subtype
 
-    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
+    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters="\n      ".join(filters))
 
     rows = await client.execute(sql, params)
 
@@ -176,6 +182,7 @@ async def hybrid_search(
             content=row["content"],
             summary=row["summary"],
             type=row["type"],
+            subtype=row.get("subtype"),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],
@@ -192,13 +199,13 @@ async def hybrid_search(
 
 VECTOR_ONLY_TEMPLATE = """
 SELECT
-    id, content, summary, type, tenant, depth_layer, decay_score, trust_score, metadata,
+    id, content, summary, type, subtype, tenant, depth_layer, decay_score, trust_score, metadata,
     access_count, created_at, accessed_at,
     1 - (embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS similarity
 FROM memories
 WHERE deleted_at IS NULL
   AND tenant = %(tenant)s
-  {{depth_filter}}
+  {{filters}}
 ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})
 LIMIT %(limit)s;
 """
@@ -210,23 +217,27 @@ async def vector_search(
     query: str,
     tenant: str = "default",
     depth_layer: str | None = None,
+    subtype: str | None = None,
     limit: int = 10,
 ) -> list[SearchResult]:
     """Pure vector similarity search (no keyword component)."""
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
-    depth_filter = ""
+    filters = []
     params: dict[str, Any] = {
         "embedding": embedding,
         "tenant": tenant,
         "limit": limit,
     }
     if depth_layer:
-        depth_filter = "AND depth_layer = %(depth_layer)s"
+        filters.append("AND depth_layer = %(depth_layer)s")
         params["depth_layer"] = depth_layer
+    if subtype:
+        filters.append("AND subtype = %(subtype)s")
+        params["subtype"] = subtype
 
-    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(depth_filter=depth_filter)
+    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters="\n  ".join(filters))
 
     rows = await client.execute(sql, params)
 
@@ -236,6 +247,7 @@ async def vector_search(
             content=row["content"],
             summary=row["summary"],
             type=row["type"],
+            subtype=row.get("subtype"),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],

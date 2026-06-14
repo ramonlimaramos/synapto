@@ -41,15 +41,15 @@ async def pg(pg):
     await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
 
 
-async def _insert_memory(pg, provider, content, depth_layer="working", mem_type="general"):
+async def _insert_memory(pg, provider, content, depth_layer="working", mem_type="general", subtype=None):
     """Helper to insert a memory with embedding."""
     emb = await provider.embed_one(content)
     row = await pg.execute_one(
         """
-        INSERT INTO memories (content, embedding, embedding_dim, type, tenant, depth_layer)
-        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO memories (content, embedding, embedding_dim, type, subtype, tenant, depth_layer)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """,
-        (content, emb, provider.dimension, mem_type, TENANT, depth_layer),
+        (content, emb, provider.dimension, mem_type, subtype, TENANT, depth_layer),
     )
     return row["id"]
 
@@ -80,6 +80,28 @@ class TestHybridSearch:
         results = await hybrid_search(pg, provider, "architecture", tenant=TENANT, depth_layer="core")
         assert all(r.depth_layer == "core" for r in results)
 
+    async def test_subtype_filter(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(
+            pg,
+            provider,
+            "always run ruff before commit",
+            mem_type="feedback",
+            subtype="workflow",
+        )
+        await _insert_memory(
+            pg,
+            provider,
+            "prefer small functions",
+            mem_type="feedback",
+            subtype="code_style",
+        )
+
+        results = await hybrid_search(pg, provider, "always run ruff", tenant=TENANT, subtype="workflow")
+
+        assert results
+        assert all(r.subtype == "workflow" for r in results)
+
 
 class TestHybridSearchParameterization:
     """Tests that depth_layer filtering uses parameterized queries (not f-string injection)."""
@@ -93,6 +115,21 @@ class TestHybridSearchParameterization:
         results = await hybrid_search(
             pg, provider, "should not appear", tenant=TENANT, depth_layer="working' OR '1'='1"
         )
+        assert len(results) == 0
+
+    async def test_subtype_with_special_characters(self, pg, provider):
+        """Ensure subtype with SQL injection payload doesn't break or leak data."""
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "workflow note should not leak", subtype="workflow")
+
+        results = await hybrid_search(
+            pg,
+            provider,
+            "workflow note",
+            tenant=TENANT,
+            subtype="workflow' OR '1'='1",
+        )
+
         assert len(results) == 0
 
     async def test_depth_layer_none_returns_all_layers(self, pg, provider):
@@ -114,6 +151,22 @@ class TestHybridSearchParameterization:
         # injection attempt should return nothing
         results = await vector_search(
             pg, provider, "debug session", tenant=TENANT, depth_layer="ephemeral' OR '1'='1"
+        )
+        assert len(results) == 0
+
+    async def test_vector_search_subtype_parameterized(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "workflow debug session", subtype="workflow")
+
+        results = await vector_search(pg, provider, "debug session", tenant=TENANT, subtype="workflow")
+        assert all(r.subtype == "workflow" for r in results)
+
+        results = await vector_search(
+            pg,
+            provider,
+            "debug session",
+            tenant=TENANT,
+            subtype="workflow' OR '1'='1",
         )
         assert len(results) == 0
 

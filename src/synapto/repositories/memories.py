@@ -18,8 +18,11 @@ from synapto.db.postgres import PostgresClient
 # ---------------------------------------------------------------------------
 
 _INSERT = """
-    INSERT INTO memories (content, summary, embedding, embedding_dim, type, tenant, depth_layer, metadata)
-    VALUES (%(content)s, %(summary)s, %(emb)s, %(dim)s, %(type)s, %(tenant)s, %(depth)s, %(meta)s)
+    INSERT INTO memories (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
+    VALUES (
+        %(content)s, %(summary)s, %(emb)s, %(dim)s, %(type)s, %(subtype)s,
+        %(tenant)s, %(depth)s, %(meta)s
+    )
     RETURNING id;
 """
 
@@ -29,6 +32,7 @@ _GET_BY_ID = """
         content,
         summary,
         type,
+        subtype,
         tenant,
         depth_layer,
         metadata,
@@ -47,6 +51,7 @@ _GET_BY_IDS = """
         content,
         summary,
         type,
+        subtype,
         tenant,
         depth_layer,
         metadata,
@@ -79,6 +84,7 @@ _UPDATE_MEMORY = """
         content,
         summary,
         type,
+        subtype,
         tenant,
         depth_layer,
         metadata,
@@ -138,7 +144,7 @@ _SELECT_HRR_VECTORS = """
 """
 
 _SELECT_WITH_HRR = """
-    SELECT id, content, type, tenant, depth_layer, trust_score, hrr_vector
+    SELECT id, content, type, subtype, tenant, depth_layer, trust_score, hrr_vector
     FROM memories
     WHERE {where_clause}
     LIMIT %s;
@@ -187,6 +193,7 @@ class MemoryRepository:
         memory_type: str,
         tenant: str,
         depth_layer: str,
+        subtype: str | None = None,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
@@ -198,6 +205,7 @@ class MemoryRepository:
                 "emb": embedding,
                 "dim": embedding_dim,
                 "type": memory_type,
+                "subtype": subtype,
                 "tenant": tenant,
                 "depth": depth_layer,
                 "meta": Jsonb(metadata or {}),

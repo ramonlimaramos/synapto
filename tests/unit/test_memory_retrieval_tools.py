@@ -39,12 +39,12 @@ async def _cleanup(pg):
     await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
 
 
-async def _insert_memory(pg, provider, content: str, *, summary: str | None = None):
+async def _insert_memory(pg, provider, content: str, *, summary: str | None = None, subtype: str | None = None):
     emb = await provider.embed_one(content)
     row = await pg.execute_one(
         """
-        INSERT INTO memories (content, summary, embedding, embedding_dim, type, tenant, depth_layer, metadata)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO memories (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """,
         (
             content,
@@ -52,6 +52,7 @@ async def _insert_memory(pg, provider, content: str, *, summary: str | None = No
             emb,
             provider.dimension,
             "reference",
+            subtype,
             TENANT,
             "stable",
             Jsonb({"source": "test"}),
@@ -63,7 +64,13 @@ async def _insert_memory(pg, provider, content: str, *, summary: str | None = No
 async def test_memory_repository_get_by_id_returns_full_record(pg, provider):
     await run_migrations(pg)
     await _cleanup(pg)
-    memory_id = await _insert_memory(pg, provider, "full content survives retrieval", summary="full")
+    memory_id = await _insert_memory(
+        pg,
+        provider,
+        "full content survives retrieval",
+        summary="full",
+        subtype="documentation",
+    )
 
     row = await MemoryRepository(pg).get_by_id(memory_id)
 
@@ -71,6 +78,7 @@ async def test_memory_repository_get_by_id_returns_full_record(pg, provider):
     assert row["id"] == memory_id
     assert row["content"] == "full content survives retrieval"
     assert row["summary"] == "full"
+    assert row["subtype"] == "documentation"
     assert row["metadata"] == {"source": "test"}
 
     await _cleanup(pg)
@@ -286,6 +294,7 @@ async def test_recall_preview_zero_uses_explicit_elision_marker(monkeypatch):
                 id="00000000-0000-0000-0000-000000000001",
                 content="hidden content",
                 type="reference",
+                subtype=None,
                 tenant=TENANT,
                 depth_layer="stable",
                 decay_score=1.0,
@@ -304,3 +313,20 @@ async def test_recall_preview_zero_uses_explicit_elision_marker(monkeypatch):
 
     assert server.RECALL_CONTENT_ELIDED in output
     assert "hidden content" not in output
+
+
+async def test_recall_passes_subtype_filter_to_hybrid_search(monkeypatch):
+    captured = {}
+
+    async def fake_hybrid_search(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
+
+    await server.recall("coding standards", subtype="code_style")
+
+    assert captured["subtype"] == "code_style"

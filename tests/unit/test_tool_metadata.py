@@ -50,6 +50,7 @@ async def test_memory_tool_descriptions_document_hard_limits():
 
     assert "summary: optional short summary (max 255 chars)" in remember.description
     assert "memory_type" in remember.description and "max 20 chars" in remember.description
+    assert "subtype" in remember.description and "max 50 chars" in remember.description
     assert "tenant" in remember.description and "max 100 chars" in remember.description
     assert "depth_layer" in remember.description and "max 20 chars" in remember.description
     assert "summary: optional replacement summary (max 255 chars)" in update_memory.description
@@ -65,7 +66,11 @@ async def test_remember_description_guides_automatic_memory_capture():
         "project context",
         "Store the memory in Synapto instead of writing flat files",
         "Recommended memory_type choices",
+        "Recommended subtypes",
         "Recommended depth_layer choices",
+        "code_style",
+        "workflow",
+        "external_system",
         "feedback",
         "project",
         "reference",
@@ -87,6 +92,7 @@ async def test_recall_description_guides_proactive_context_loading():
         "preferences",
         "Recall proactively",
         "Use tenant to scope project-specific memory",
+        "subtype to narrow within a memory_type",
         "Follow up with get_memory",
     ):
         assert phrase in recall.description
