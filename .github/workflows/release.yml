@@ -36,13 +36,13 @@ jobs:
           echo "error: only repo admins can create releases"
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: set up python
         run: uv python install 3.13
@@ -118,7 +118,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: create github release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ steps.bump.outputs.version }}"
           name: "v${{ steps.bump.outputs.version }}"
