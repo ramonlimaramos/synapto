@@ -9,6 +9,55 @@ from synapto.embeddings.registry import get_provider, list_providers
 from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
 
 
+class FakeVector(list):
+    def tolist(self) -> list[float]:
+        return list(self)
+
+
+class FakeSentenceTransformerModel:
+    def __init__(self) -> None:
+        self.encode_calls: list[dict[str, object]] = []
+
+    def get_embedding_dimension(self) -> int:
+        return 384
+
+    def encode(self, texts: list[str], normalize_embeddings: bool) -> list[FakeVector]:
+        self.encode_calls.append({
+            "texts": texts,
+            "normalize_embeddings": normalize_embeddings,
+        })
+        return [_fake_vector(text) for text in texts]
+
+
+def _fake_vector(text: str) -> FakeVector:
+    lower_text = text.lower()
+    if "cat" in lower_text:
+        index = 0
+    elif "quantum" in lower_text:
+        index = 1
+    elif "chocolate" in lower_text or "cake" in lower_text:
+        index = 2
+    else:
+        index = sum(ord(char) for char in lower_text) % 384
+
+    vector = FakeVector([0.0] * 384)
+    vector[index] = 1.0
+    return vector
+
+
+@pytest.fixture(autouse=True)
+def fake_sentence_transformer_model(monkeypatch):
+    model = FakeSentenceTransformerModel()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("synapto.embeddings.sentence_transformer._load_model", lambda _model_name: model)
+    return model
+
+
+@pytest.fixture
+def provider():
+    return SentenceTransformerProvider()
+
+
 class TestSentenceTransformerProvider:
     async def test_embed_returns_correct_dimension(self, provider):
         vectors = await provider.embed(["hello world"])
@@ -25,6 +74,13 @@ class TestSentenceTransformerProvider:
     async def test_embed_one(self, provider):
         vec = await provider.embed_one("single text")
         assert len(vec) == provider.dimension
+
+    async def test_embed_normalizes_embeddings(self, provider, fake_sentence_transformer_model):
+        await provider.embed(["hello world"])
+        assert fake_sentence_transformer_model.encode_calls == [{
+            "texts": ["hello world"],
+            "normalize_embeddings": True,
+        }]
 
     def test_dimension_is_384(self, provider):
         assert provider.dimension == 384
