@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **optional memory subtype filtering** for governed context domains: `remember(..., subtype=...)` can persist free-form memory subcategories, and `recall(..., subtype=...)`, hybrid search, and vector search can filter by subtype while preserving tenant and depth-layer filtering (#58).
+- **automatic memory capture guidance** in MCP server instructions and tool metadata so agents get clearer direction on when to recall or store durable project, user, feedback, and reference memories (#57).
+
+### Changed
+
+- **Claude Code MCP configuration disables native flat-file auto-memory** by default for Synapto installs, keeping Synapto as the governed source of truth instead of duplicating memories into Claude's local memory files (#56).
+- **GitHub Actions workflows updated for Node 24 compatibility**, including current checkout/setup actions used by CI and release automation (#55).
+
+### Fixed
+
+- **embedding tests now run offline and deterministically**, avoiding Hugging Face/cache network flakes in CI while still exercising the embedding integration surface (#59).
+
 ## [0.4.0] - 2026-06-10
 
 ### Added
