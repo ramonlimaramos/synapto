@@ -54,3 +54,39 @@ async def test_memory_tool_descriptions_document_hard_limits():
     assert "depth_layer" in remember.description and "max 20 chars" in remember.description
     assert "summary: optional replacement summary (max 255 chars)" in update_memory.description
     assert "memory_ids: UUIDs of memories to fetch (max 20)" in get_memories.description
+
+
+async def test_remember_description_guides_automatic_memory_capture():
+    remember = await mcp.get_tool("remember")
+
+    for phrase in (
+        "durable preference",
+        "workflow rule",
+        "project context",
+        "Store the memory in Synapto instead of writing flat files",
+        "Recommended memory_type choices",
+        "Recommended depth_layer choices",
+        "feedback",
+        "project",
+        "reference",
+        "user",
+        "core",
+        "stable",
+        "working",
+        "ephemeral",
+    ):
+        assert phrase in remember.description
+
+
+async def test_recall_description_guides_proactive_context_loading():
+    recall = await mcp.get_tool("recall")
+
+    for phrase in (
+        "at the start of any non-trivial task",
+        "prior decisions",
+        "preferences",
+        "Recall proactively",
+        "Use tenant to scope project-specific memory",
+        "Follow up with get_memory",
+    ):
+        assert phrase in recall.description

@@ -140,6 +140,19 @@ Restart Claude Code after running the command so the MCP subprocess receives the
 
 Restart your agent. Synapto tools appear automatically, and any future release will be live on the next restart.
 
+## Default Memory Routing
+
+Synapto is designed to be the primary memory sink for MCP-compatible agents. Agents should call `recall` before non-trivial work and call `remember` when users provide durable context instead of writing new memory into flat files.
+
+| User signal | Tool action | Recommended type/layer |
+|-------------|-------------|------------------------|
+| "always X", "never Y", "from now on" | Store as a rule | `feedback` / `core` |
+| "don't do X", "that's wrong" | Store as a correction | `feedback` / `core` |
+| "we use X for Y", "our architecture is..." | Store as project context | `project` / `stable` |
+| "this sprint", "current PR", "release plan" | Store as active work | `project` / `working` |
+| "tracked in Linear", "dashboard is..." | Store as external reference | `reference` / `stable` |
+| "I work on...", "my preference is..." | Store as user context | `user` / `stable` |
+
 ## MCP Tools
 
 | Tool | What it does |

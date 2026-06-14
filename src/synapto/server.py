@@ -359,6 +359,29 @@ async def remember(
 ) -> str:
     """Store a memory with optional entity extraction.
 
+    IMPORTANT: Use this tool whenever the user gives a durable preference,
+    correction, workflow rule, project context, architecture note, external
+    system reference, identity detail, or explicitly asks you to remember
+    something. Store the memory in Synapto instead of writing flat files such
+    as MEMORY.md or CLAUDE.md notes.
+
+    Recommended memory_type choices:
+    - feedback: user preferences, corrections, workflow rules, code style,
+      testing expectations, communication rules.
+    - project: project-specific architecture, decisions, active work, release
+      plans, repository conventions.
+    - reference: external systems, dashboards, docs, URLs, credentials
+      locations, operational runbooks.
+    - user: long-lived details about the user's role, constraints, expertise,
+      or personal preferences.
+    - general: useful context that does not fit another category.
+
+    Recommended depth_layer choices:
+    - core: rules that should not expire, such as "always" or "never" feedback.
+    - stable: context expected to last months, such as architecture decisions.
+    - working: active tasks, current sprint/release work, or handoffs.
+    - ephemeral: short-lived debugging notes and temporary observations.
+
     Args:
         content: memory content to store (text; no Synapto length limit)
         memory_type: category (general, user, feedback, project, reference; max 20 chars)
@@ -511,6 +534,17 @@ async def recall(
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
 ) -> str:
     """Search memories using hybrid semantic + keyword search with RRF ranking.
+
+    IMPORTANT: Call this tool at the start of any non-trivial task to load
+    relevant context before acting. Also call it whenever the user references
+    prior decisions, history, preferences, project context, "remember", or
+    "what do we know about" style questions. Recall proactively rather than
+    waiting for the user to ask.
+
+    Use tenant to scope project-specific memory and depth_layer to narrow the
+    result set when you need only core rules, stable architecture, working task
+    context, or ephemeral debugging notes. Follow up with get_memory when a
+    recalled result needs full content, metadata, or linked entities.
 
     Args:
         query: natural language search query
