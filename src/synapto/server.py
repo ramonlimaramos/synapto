@@ -126,6 +126,7 @@ DEFAULT_RECALL_PREVIEW_CHARS = 200
 MAX_BULK_MEMORY_IDS = 20
 MAX_SUMMARY_CHARS = 255
 MAX_MEMORY_TYPE_CHARS = 20
+MAX_SUBTYPE_CHARS = 50
 MAX_TENANT_CHARS = 100
 MAX_DEPTH_LAYER_CHARS = 20
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
@@ -163,11 +164,13 @@ def _validate_max_chars(field: str, value: str | None, max_chars: int, *, guidan
 def _validate_memory_fields(
     *,
     memory_type: str | None = None,
+    subtype: str | None = None,
     tenant: str | None = None,
     depth_layer: str | None = None,
     summary: str | None = None,
 ) -> None:
     _validate_max_chars("memory_type", memory_type, MAX_MEMORY_TYPE_CHARS)
+    _validate_max_chars("subtype", subtype, MAX_SUBTYPE_CHARS)
     _validate_max_chars("tenant", tenant, MAX_TENANT_CHARS)
     _validate_max_chars("depth_layer", depth_layer, MAX_DEPTH_LAYER_CHARS)
     _validate_max_chars(
@@ -197,6 +200,8 @@ def _format_memory(
         f"created_at: {_format_timestamp(row.get('created_at'))}",
         f"accessed_at: {_format_timestamp(row.get('accessed_at'))}",
     ]
+    if row.get("subtype"):
+        lines.insert(3, f"subtype: {row['subtype']}")
     if row.get("summary"):
         lines.append(f"summary: {row['summary']}")
     lines.append(f"metadata: {_format_json(row.get('metadata'))}")
@@ -351,6 +356,7 @@ def handoff_inbox_template(
 async def remember(
     content: str,
     memory_type: str = "general",
+    subtype: str | None = None,
     tenant: str | None = None,
     depth_layer: str = "working",
     summary: str | None = None,
@@ -376,6 +382,14 @@ async def remember(
       or personal preferences.
     - general: useful context that does not fit another category.
 
+    Optional subtype is free-form and not enum-validated. Use it to improve
+    recall precision within a memory_type. Recommended subtypes:
+    - feedback: code_style, workflow, tooling, testing, security, communication.
+    - reference: external_system, internal_dashboard, documentation, team,
+      infra_config.
+    - project: working, stable, archived.
+    - user: role, preference, skill, constraint.
+
     Recommended depth_layer choices:
     - core: rules that should not expire, such as "always" or "never" feedback.
     - stable: context expected to last months, such as architecture decisions.
@@ -385,13 +399,20 @@ async def remember(
     Args:
         content: memory content to store (text; no Synapto length limit)
         memory_type: category (general, user, feedback, project, reference; max 20 chars)
+        subtype: optional free-form subcategory (recommended values documented; max 50 chars)
         tenant: project/tenant scope (defaults to config default; max 100 chars)
         depth_layer: core, stable, working, or ephemeral (max 20 chars)
         summary: optional short summary (max 255 chars)
         metadata: optional JSON metadata
         extract_entities: auto-extract and link entities from content
     """
-    _validate_memory_fields(memory_type=memory_type, tenant=tenant, depth_layer=depth_layer, summary=summary)
+    _validate_memory_fields(
+        memory_type=memory_type,
+        subtype=subtype,
+        tenant=tenant,
+        depth_layer=depth_layer,
+        summary=summary,
+    )
 
     pg = _get_pg()
     provider = _get_provider()
@@ -405,6 +426,7 @@ async def remember(
         embedding=embedding,
         embedding_dim=provider.dimension,
         memory_type=memory_type,
+        subtype=subtype,
         tenant=t,
         depth_layer=depth_layer,
         summary=summary,
@@ -427,7 +449,10 @@ async def remember(
         logger.warning("hrr vector computation failed for %s: %s", memory_id, e)
 
     cache = _get_cache()
-    await cache.cache_memory(memory_id, {"content": content, "type": memory_type, "tenant": t})
+    await cache.cache_memory(
+        memory_id,
+        {"content": content, "type": memory_type, "subtype": subtype, "tenant": t},
+    )
 
     entity_count = len(entity_names)
     return f"stored memory {memory_id} ({depth_layer}, {entity_count} entities linked)"
@@ -530,6 +555,7 @@ async def recall(
     query: str,
     tenant: str | None = None,
     depth_layer: str | None = None,
+    subtype: str | None = None,
     limit: int = 10,
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
 ) -> str:
@@ -541,24 +567,34 @@ async def recall(
     "what do we know about" style questions. Recall proactively rather than
     waiting for the user to ask.
 
-    Use tenant to scope project-specific memory and depth_layer to narrow the
-    result set when you need only core rules, stable architecture, working task
-    context, or ephemeral debugging notes. Follow up with get_memory when a
-    recalled result needs full content, metadata, or linked entities.
+    Use tenant to scope project-specific memory, depth_layer to narrow by decay
+    semantics, and subtype to narrow within a memory_type, such as workflow or
+    code_style feedback. Follow up with get_memory when a recalled result needs
+    full content, metadata, or linked entities.
 
     Args:
         query: natural language search query
         tenant: filter to a specific project/tenant
         depth_layer: filter to a specific depth layer (core, stable, working, ephemeral)
+        subtype: optional memory subcategory filter (for example code_style or workflow)
         limit: max results to return
         preview_chars: max content characters per result (0-1000)
     """
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
+    _validate_memory_fields(subtype=subtype)
     preview_chars = max(0, min(preview_chars, MAX_RECALL_PREVIEW_CHARS))
 
-    results = await hybrid_search(pg, provider, query, tenant=t, depth_layer=depth_layer, limit=limit)
+    results = await hybrid_search(
+        pg,
+        provider,
+        query,
+        tenant=t,
+        depth_layer=depth_layer,
+        subtype=subtype,
+        limit=limit,
+    )
 
     if not results:
         return _wrap_system_reminder(load_prompt("recall_empty"))
@@ -571,8 +607,9 @@ async def recall(
             preview = r.content[:preview_chars]
             if len(r.content) > preview_chars:
                 preview += "..."
+        type_label = r.type if not getattr(r, "subtype", None) else f"{r.type}/{r.subtype}"
         memories.append(
-            f"[{r.depth_layer}] ({r.type}) score={r.rrf_score:.4f} "
+            f"[{r.depth_layer}] ({type_label}) score={r.rrf_score:.4f} "
             f"decay={r.decay_score:.2f} trust={r.trust_score:.2f} "
             f"tenant={r.tenant} created_at={_format_timestamp(r.created_at)}\n"
             f"  {preview}\n"

@@ -152,7 +152,7 @@ class TestMigrationRunner:
         version = await get_schema_version(pg)
         # The synapto_migrations tracking table is shared with the project's real
         # migrations, so version reflects the highest applied number across both
-        # the project (currently up to 003) and these temp migrations (002).
+        # the project (currently up to 004) and these temp migrations (002).
         # Assert at least the temp migrations landed rather than pinning an exact value.
         assert version is not None and version >= 2
 

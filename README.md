@@ -146,12 +146,14 @@ Synapto is designed to be the primary memory sink for MCP-compatible agents. Age
 
 | User signal | Tool action | Recommended type/layer |
 |-------------|-------------|------------------------|
-| "always X", "never Y", "from now on" | Store as a rule | `feedback` / `core` |
-| "don't do X", "that's wrong" | Store as a correction | `feedback` / `core` |
-| "we use X for Y", "our architecture is..." | Store as project context | `project` / `stable` |
-| "this sprint", "current PR", "release plan" | Store as active work | `project` / `working` |
-| "tracked in Linear", "dashboard is..." | Store as external reference | `reference` / `stable` |
-| "I work on...", "my preference is..." | Store as user context | `user` / `stable` |
+| "always X", "never Y", "from now on" | Store as a rule | `feedback` / `core`, subtype `workflow` |
+| "don't do X", "that's wrong" | Store as a correction | `feedback` / `core`, subtype `communication` or `workflow` |
+| "we use X for Y", "our architecture is..." | Store as project context | `project` / `stable`, subtype `stable` |
+| "this sprint", "current PR", "release plan" | Store as active work | `project` / `working`, subtype `working` |
+| "tracked in Linear", "dashboard is..." | Store as external reference | `reference` / `stable`, subtype `external_system` |
+| "I work on...", "my preference is..." | Store as user context | `user` / `stable`, subtype `preference` |
+
+`subtype` is optional and free-form. Recommended values include `code_style`, `workflow`, `tooling`, `testing`, `security`, `communication`, `external_system`, `documentation`, `role`, `preference`, `skill`, and `constraint`.
 
 ## MCP Tools
 
@@ -181,6 +183,7 @@ get actionable errors instead of raw Postgres exceptions.
 | `content` | Text; no Synapto length limit |
 | `summary` | Max 255 characters |
 | `memory_type` | Max 20 characters |
+| `subtype` | Optional free-form subcategory, max 50 characters |
 | `depth_layer` | Max 20 characters |
 | `tenant` | Max 100 characters |
 | `get_memories.memory_ids` | Max 20 IDs per call |

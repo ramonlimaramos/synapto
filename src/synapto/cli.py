@@ -504,7 +504,7 @@ def export_cmd(tenant: str | None, output: str) -> None:
         t = tenant or config.default_tenant
         rows = await client.execute(
             """
-            SELECT id, content, summary, type, tenant, depth_layer, metadata, created_at, accessed_at
+            SELECT id, content, summary, type, subtype, tenant, depth_layer, metadata, created_at, accessed_at
             FROM memories WHERE deleted_at IS NULL AND tenant = %s ORDER BY created_at;
             """,
             (t,),
@@ -571,8 +571,9 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
             emb = await provider.embed_one(content)
             await client.execute(
                 """
-                INSERT INTO memories (content, summary, embedding, embedding_dim, type, tenant, depth_layer, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                INSERT INTO memories
+                    (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
                 (
                     content,
@@ -580,6 +581,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
                     emb,
                     provider.dimension,
                     item.get("type", "general"),
+                    item.get("subtype"),
                     t,
                     item.get("depth_layer", "stable"),
                     Jsonb(item.get("metadata", {})),
@@ -818,8 +820,8 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
                                 """
                                 INSERT INTO memories
                                     (content, summary, embedding, embedding_dim,
-                                     type, tenant, depth_layer, metadata)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                                     type, subtype, tenant, depth_layer, metadata)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
                                 """,
                                 (
                                     mem.content,
@@ -827,6 +829,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
                                     embedding,
                                     provider.dimension,
                                     mem.memory_type,
+                                    None,
                                     config.default_tenant,
                                     mem.depth_layer,
                                     Jsonb(meta),
