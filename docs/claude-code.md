@@ -19,7 +19,10 @@ synapto init
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["--refresh", "synapto", "serve"]
+      "args": ["--refresh", "synapto", "serve"],
+      "env": {
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+      }
     }
   }
 }
@@ -34,6 +37,7 @@ synapto init
       "command": "uvx",
       "args": ["--refresh", "synapto", "serve"],
       "env": {
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
         "SYNAPTO_DEFAULT_TENANT": "my-project"
       }
     }
@@ -42,6 +46,8 @@ synapto init
 ```
 
 > **Why `--refresh`?** Without it, `uvx` reuses the cached environment across restarts, so a new Synapto release on PyPI will not be picked up until the cache expires or you run `uv cache clean synapto` manually. `--refresh` tells `uv` to re-resolve the package on every launch, adding 1–3 seconds to Claude Code's MCP startup in exchange for "always on the latest version" — the right default while Synapto is shipping fast. Drop the flag (or pin a version like `"synapto==0.2.0"`) once you want to freeze a known-good build.
+
+> **Why `CLAUDE_CODE_DISABLE_AUTO_MEMORY`?** When Synapto is the active memory layer, this tells Claude Code to skip its flat-file auto-memory extraction so new memories do not get duplicated outside Synapto.
 
 ### Upgrading mid-session
 

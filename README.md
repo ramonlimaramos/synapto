@@ -104,11 +104,16 @@ The recommended way is `uvx` with `--refresh` — every restart pulls the latest
   "mcpServers": {
     "synapto": {
       "command": "uvx",
-      "args": ["--refresh", "synapto", "serve"]
+      "args": ["--refresh", "synapto", "serve"],
+      "env": {
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+      }
     }
   }
 }
 ```
+
+Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for Claude Code so Synapto remains the single memory sink instead of duplicating new memories into Claude's flat-file auto-memory.
 
 **Cursor** (`.cursor/mcp.json`):
 

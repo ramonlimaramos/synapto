@@ -6,7 +6,7 @@ import json
 
 from click.testing import CliRunner
 
-from synapto.cli import _detect_mcp_clients, _write_mcp_config
+from synapto.cli import _detect_mcp_clients, _offer_mcp_config, _write_mcp_config
 
 
 class TestDetectMcpClients:
@@ -57,6 +57,20 @@ class TestWriteMcpConfig:
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["env"]["SYNAPTO_DEFAULT_TENANT"] == "my-project"
 
+    def test_can_disable_claude_code_auto_memory(self, tmp_path):
+        config_path = tmp_path / "mcp.json"
+
+        _write_mcp_config(
+            config_path,
+            tenant="my-project",
+            disable_claude_auto_memory=True,
+        )
+
+        data = json.loads(config_path.read_text())
+        env = data["mcpServers"]["synapto"]["env"]
+        assert env["SYNAPTO_DEFAULT_TENANT"] == "my-project"
+        assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
     def test_preserves_existing_servers(self, tmp_path):
         config_path = tmp_path / "mcp.json"
         config_path.write_text(json.dumps({
@@ -92,6 +106,34 @@ class TestWriteMcpConfig:
         assert config_path.exists()
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["command"] == "uvx"
+
+
+class TestOfferMcpConfig:
+    def test_disables_claude_code_auto_memory_only_for_claude(self, tmp_path, monkeypatch):
+        claude_config = tmp_path / "claude.json"
+        cursor_config = tmp_path / "cursor.json"
+
+        import synapto.cli as cli
+
+        monkeypatch.setattr(
+            cli,
+            "_detect_mcp_clients",
+            lambda: [
+                {"name": "Claude Code", "path": claude_config, "key": "mcpServers"},
+                {"name": "Cursor", "path": cursor_config, "key": "mcpServers"},
+            ],
+        )
+        monkeypatch.setattr(cli.click, "confirm", lambda *args, **kwargs: True)
+
+        _offer_mcp_config(tenant="default")
+
+        claude_data = json.loads(claude_config.read_text())
+        cursor_data = json.loads(cursor_config.read_text())
+        assert (
+            claude_data["mcpServers"]["synapto"]["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"]
+            == "1"
+        )
+        assert "env" not in cursor_data["mcpServers"]["synapto"]
 
 
 class TestServeCommand:

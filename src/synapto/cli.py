@@ -14,6 +14,7 @@ logger = logging.getLogger("synapto.cli")
 
 # Memory migration: how many texts to embed per provider call.
 EMBEDDING_BATCH_SIZE = 64
+CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 
 def _run(coro):
@@ -558,7 +559,12 @@ def _detect_mcp_clients(home=None) -> list[dict]:
     return clients
 
 
-def _write_mcp_config(config_path, tenant: str = "default") -> None:
+def _write_mcp_config(
+    config_path,
+    tenant: str = "default",
+    *,
+    disable_claude_auto_memory: bool = False,
+) -> None:
     """Write synapto MCP config using uvx for auto-updates."""
     from pathlib import Path
 
@@ -573,8 +579,13 @@ def _write_mcp_config(config_path, tenant: str = "default") -> None:
         "command": "uvx",
         "args": ["synapto", "serve"],
     }
+    env = {}
     if tenant != "default":
-        server_config["env"] = {"SYNAPTO_DEFAULT_TENANT": tenant}
+        env["SYNAPTO_DEFAULT_TENANT"] = tenant
+    if disable_claude_auto_memory:
+        env[CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV] = "1"
+    if env:
+        server_config["env"] = env
 
     servers["synapto"] = server_config
     existing["mcpServers"] = servers
@@ -593,7 +604,11 @@ def _offer_mcp_config(tenant: str = "default") -> None:
     click.echo("\n--- mcp client configuration ---")
     for client in clients:
         if click.confirm(f"configure {client['name']} with auto-update (uvx)?", default=True):
-            _write_mcp_config(client["path"], tenant)
+            _write_mcp_config(
+                client["path"],
+                tenant,
+                disable_claude_auto_memory=client["name"] == "Claude Code",
+            )
             click.echo(f"  written: {client['path']}")
         else:
             click.echo(f"  skipped: {client['name']}")
