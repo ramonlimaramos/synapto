@@ -129,6 +129,28 @@ def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float =
         return 0.0
 
 
+def _build_memory_filters(
+    *,
+    depth_layer: str | None = None,
+    subtype: str | None = None,
+    indent: str,
+) -> tuple[str, dict[str, str]]:
+    """Build shared optional memory filters.
+
+    Complexity: O(1) time and space because the supported filter set is fixed.
+    User values stay in params so SQL rendering remains injection-safe.
+    """
+    filters = []
+    params = {}
+    if depth_layer:
+        filters.append("AND depth_layer = %(depth_layer)s")
+        params["depth_layer"] = depth_layer
+    if subtype:
+        filters.append("AND subtype = %(subtype)s")
+        params["subtype"] = subtype
+    return f"\n{indent}".join(filters), params
+
+
 async def hybrid_search(
     client: PostgresClient,
     provider: EmbeddingProvider,
@@ -143,7 +165,6 @@ async def hybrid_search(
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
-    filters = []
     params: dict[str, Any] = {
         "embedding": embedding,
         "query": query,
@@ -151,14 +172,14 @@ async def hybrid_search(
         "rrf_k": rrf_k,
         "limit": limit * 2,  # fetch extra for HRR reranking
     }
-    if depth_layer:
-        filters.append("AND depth_layer = %(depth_layer)s")
-        params["depth_layer"] = depth_layer
-    if subtype:
-        filters.append("AND subtype = %(subtype)s")
-        params["subtype"] = subtype
+    filter_sql, filter_params = _build_memory_filters(
+        depth_layer=depth_layer,
+        subtype=subtype,
+        indent="      ",
+    )
+    params.update(filter_params)
 
-    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters="\n      ".join(filters))
+    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(sql, params)
 
@@ -224,20 +245,19 @@ async def vector_search(
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
-    filters = []
     params: dict[str, Any] = {
         "embedding": embedding,
         "tenant": tenant,
         "limit": limit,
     }
-    if depth_layer:
-        filters.append("AND depth_layer = %(depth_layer)s")
-        params["depth_layer"] = depth_layer
-    if subtype:
-        filters.append("AND subtype = %(subtype)s")
-        params["subtype"] = subtype
+    filter_sql, filter_params = _build_memory_filters(
+        depth_layer=depth_layer,
+        subtype=subtype,
+        indent="  ",
+    )
+    params.update(filter_params)
 
-    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters="\n  ".join(filters))
+    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(sql, params)
 
