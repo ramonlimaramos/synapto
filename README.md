@@ -115,6 +115,14 @@ The recommended way is `uvx` with `--refresh` — every restart pulls the latest
 
 Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for Claude Code so Synapto remains the single memory sink instead of duplicating new memories into Claude's flat-file auto-memory.
 
+Existing Claude Code users can upgrade their MCP config in place:
+
+```bash
+uvx --refresh synapto configure-mcp --client claude-code --yes
+```
+
+Restart Claude Code after running the command so the MCP subprocess receives the new environment.
+
 **Cursor** (`.cursor/mcp.json`):
 
 ```json

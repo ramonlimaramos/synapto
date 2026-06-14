@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 import click
 
@@ -15,11 +16,23 @@ logger = logging.getLogger("synapto.cli")
 # Memory migration: how many texts to embed per provider call.
 EMBEDDING_BATCH_SIZE = 64
 CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+MCP_CLIENT_ALL = "all"
+MCP_CLIENT_CLAUDE_CODE = "claude-code"
+MCP_CLIENT_CURSOR = "cursor"
 
 
 def _run(coro):
     """Run an async function synchronously."""
     return asyncio.run(coro)
+
+
+def _mcp_client_slug(client: dict) -> str:
+    name = client["name"].lower()
+    if "claude" in name:
+        return MCP_CLIENT_CLAUDE_CODE
+    if "cursor" in name:
+        return MCP_CLIENT_CURSOR
+    return name.replace(" ", "-")
 
 
 @click.group()
@@ -143,6 +156,48 @@ def serve() -> None:
     # Keep stderr machine-readable. FastMCP's Rich banner bypasses logging and
     # otherwise pollutes the JSON log stream used by MCP stdio deployments.
     mcp.run(show_banner=False)
+
+
+@main.command(name="configure-mcp")
+@click.option(
+    "--client",
+    type=click.Choice([MCP_CLIENT_ALL, MCP_CLIENT_CLAUDE_CODE, MCP_CLIENT_CURSOR], case_sensitive=False),
+    default=MCP_CLIENT_ALL,
+    show_default=True,
+    help="MCP client config to update",
+)
+@click.option("--tenant", default=None, help="set or update SYNAPTO_DEFAULT_TENANT")
+@click.option("--yes", "-y", is_flag=True, help="update detected MCP configs without prompting")
+@click.option("--home", default=None, type=click.Path(exists=True), hidden=True)
+def configure_mcp(client: str, tenant: str | None, yes: bool, home: str | None) -> None:
+    """Configure detected MCP clients for Synapto."""
+    clients = _detect_mcp_clients(home=Path(home) if home else None)
+    target = client.lower()
+    selected = [
+        c for c in clients
+        if target == MCP_CLIENT_ALL or _mcp_client_slug(c) == target
+    ]
+
+    if not selected:
+        click.echo("no matching MCP clients detected")
+        return
+
+    click.echo("synapto MCP configuration\n")
+    for detected in selected:
+        slug = _mcp_client_slug(detected)
+        if not yes and not click.confirm(f"configure {detected['name']} for Synapto?", default=True):
+            click.echo(f"  skipped: {detected['name']}")
+            continue
+
+        _write_mcp_config(
+            detected["path"],
+            tenant=tenant,
+            disable_claude_auto_memory=slug == MCP_CLIENT_CLAUDE_CODE,
+            preserve_existing_synapto=True,
+        )
+        click.echo(f"  written: {detected['path']}")
+
+    click.echo("\nrestart your MCP client so the updated environment is loaded")
 
 
 @main.command()
@@ -540,8 +595,6 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
 
 def _detect_mcp_clients(home=None) -> list[dict]:
     """Detect installed MCP clients and their config paths."""
-    from pathlib import Path
-
     home = home or Path.home()
     clients = []
 
@@ -561,13 +614,12 @@ def _detect_mcp_clients(home=None) -> list[dict]:
 
 def _write_mcp_config(
     config_path,
-    tenant: str = "default",
+    tenant: str | None = "default",
     *,
     disable_claude_auto_memory: bool = False,
+    preserve_existing_synapto: bool = False,
 ) -> None:
     """Write synapto MCP config using uvx for auto-updates."""
-    from pathlib import Path
-
     path = Path(config_path)
     existing = {}
     if path.exists():
@@ -575,24 +627,38 @@ def _write_mcp_config(
             existing = json.loads(f.read())
 
     servers = existing.get("mcpServers", {})
-    server_config: dict = {
-        "command": "uvx",
-        "args": ["synapto", "serve"],
-    }
-    env = {}
-    if tenant != "default":
+    current_server = servers.get("synapto")
+    if preserve_existing_synapto and isinstance(current_server, dict):
+        server_config: dict = dict(current_server)
+    else:
+        server_config = {
+            "command": "uvx",
+            "args": ["--refresh", "synapto", "serve"],
+        }
+
+    existing_env = server_config.get("env")
+    env = dict(existing_env) if isinstance(existing_env, dict) else {}
+    if tenant is not None and tenant != "default":
         env["SYNAPTO_DEFAULT_TENANT"] = tenant
+    elif tenant == "default":
+        env.pop("SYNAPTO_DEFAULT_TENANT", None)
+
     if disable_claude_auto_memory:
         env[CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV] = "1"
+    else:
+        env.pop(CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV, None)
+
     if env:
         server_config["env"] = env
+    else:
+        server_config.pop("env", None)
 
     servers["synapto"] = server_config
     existing["mcpServers"] = servers
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        f.write(json.dumps(existing, indent=2))
+        f.write(json.dumps(existing, indent=2) + "\n")
 
 
 def _offer_mcp_config(tenant: str = "default") -> None:

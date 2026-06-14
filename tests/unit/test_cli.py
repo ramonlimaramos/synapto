@@ -6,7 +6,7 @@ import json
 
 from click.testing import CliRunner
 
-from synapto.cli import _detect_mcp_clients, _offer_mcp_config, _write_mcp_config
+from synapto.cli import _detect_mcp_clients, _offer_mcp_config, _write_mcp_config, main
 
 
 class TestDetectMcpClients:
@@ -46,7 +46,7 @@ class TestWriteMcpConfig:
 
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["command"] == "uvx"
-        assert data["mcpServers"]["synapto"]["args"] == ["synapto", "serve"]
+        assert data["mcpServers"]["synapto"]["args"] == ["--refresh", "synapto", "serve"]
         assert "env" not in data["mcpServers"]["synapto"]
 
     def test_creates_config_with_custom_tenant(self, tmp_path):
@@ -97,6 +97,55 @@ class TestWriteMcpConfig:
 
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["command"] == "uvx"
+        assert data["mcpServers"]["synapto"]["args"] == ["--refresh", "synapto", "serve"]
+
+    def test_preserves_existing_synapto_command_when_upgrading(self, tmp_path):
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "synapto": {
+                    "command": "uv",
+                    "args": ["--directory", "/repo/synapto", "run", "synapto", "serve"],
+                    "env": {"SYNAPTO_DEFAULT_TENANT": "existing"},
+                }
+            }
+        }))
+
+        _write_mcp_config(
+            config_path,
+            tenant=None,
+            disable_claude_auto_memory=True,
+            preserve_existing_synapto=True,
+        )
+
+        data = json.loads(config_path.read_text())
+        server = data["mcpServers"]["synapto"]
+        assert server["command"] == "uv"
+        assert server["args"] == ["--directory", "/repo/synapto", "run", "synapto", "serve"]
+        assert server["env"]["SYNAPTO_DEFAULT_TENANT"] == "existing"
+        assert server["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+    def test_cursor_upgrade_removes_claude_only_env(self, tmp_path):
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "synapto": {
+                    "command": "uvx",
+                    "args": ["--refresh", "synapto", "serve"],
+                    "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+                }
+            }
+        }))
+
+        _write_mcp_config(
+            config_path,
+            tenant=None,
+            disable_claude_auto_memory=False,
+            preserve_existing_synapto=True,
+        )
+
+        data = json.loads(config_path.read_text())
+        assert "env" not in data["mcpServers"]["synapto"]
 
     def test_creates_parent_directories(self, tmp_path):
         config_path = tmp_path / "nested" / "dir" / "mcp.json"
@@ -134,6 +183,50 @@ class TestOfferMcpConfig:
             == "1"
         )
         assert "env" not in cursor_data["mcpServers"]["synapto"]
+
+
+class TestConfigureMcpCommand:
+    def test_configure_mcp_upgrades_detected_claude_config(self, tmp_path):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        config_path = claude_dir / ".mcp.json"
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "synapto": {
+                    "command": "uv",
+                    "args": ["--directory", "/repo/synapto", "run", "synapto", "serve"],
+                }
+            }
+        }))
+
+        result = CliRunner().invoke(
+            main,
+            ["configure-mcp", "--home", str(tmp_path), "--client", "claude-code", "--tenant", "project-a", "--yes"],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(config_path.read_text())
+        server = data["mcpServers"]["synapto"]
+        assert server["command"] == "uv"
+        assert server["args"] == ["--directory", "/repo/synapto", "run", "synapto", "serve"]
+        assert server["env"]["SYNAPTO_DEFAULT_TENANT"] == "project-a"
+        assert server["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+        assert "restart your MCP client" in result.output
+
+    def test_configure_mcp_updates_cursor_without_claude_env(self, tmp_path):
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        config_path = cursor_dir / "mcp.json"
+
+        result = CliRunner().invoke(
+            main,
+            ["configure-mcp", "--home", str(tmp_path), "--client", "cursor", "--tenant", "project-a", "--yes"],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(config_path.read_text())
+        server = data["mcpServers"]["synapto"]
+        assert server["env"] == {"SYNAPTO_DEFAULT_TENANT": "project-a"}
 
 
 class TestServeCommand:

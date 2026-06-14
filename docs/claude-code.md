@@ -49,6 +49,16 @@ synapto init
 
 > **Why `CLAUDE_CODE_DISABLE_AUTO_MEMORY`?** When Synapto is the active memory layer, this tells Claude Code to skip its flat-file auto-memory extraction so new memories do not get duplicated outside Synapto.
 
+### Upgrading an existing MCP config
+
+If you already use Synapto with Claude Code, upgrade your config once after installing this release:
+
+```bash
+uvx --refresh synapto configure-mcp --client claude-code --yes
+```
+
+The command preserves your existing Synapto `command` and `args`, adds `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, and keeps any existing `SYNAPTO_DEFAULT_TENANT` unless you pass a new `--tenant`.
+
 ### Upgrading mid-session
 
 If a new Synapto release lands while Claude Code is already running, the existing MCP subprocess keeps using the version it started with. To pick up the new release, **fully quit Claude Code (`Cmd+Q`) and relaunch** — the MCP server is a child process of Claude Code, so a window-close is not enough. With `--refresh` in place, the relaunch will pull the new version automatically.
