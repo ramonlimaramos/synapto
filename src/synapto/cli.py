@@ -209,7 +209,7 @@ def search(query: str, tenant: str | None, limit: int, depth: str | None) -> Non
     """Search memories from the command line."""
 
     async def _search():
-        from synapto.config import load_config
+        from synapto.config import embedding_provider_kwargs, load_config
         from synapto.db.migrations import ensure_hnsw_index
         from synapto.db.postgres import PostgresClient
         from synapto.embeddings.registry import get_provider
@@ -221,7 +221,7 @@ def search(query: str, tenant: str | None, limit: int, depth: str | None) -> Non
         client = PostgresClient(config.pg_dsn)
         await client.connect()
 
-        provider = get_provider(config.embedding_provider)
+        provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         await ensure_hnsw_index(client, provider.dimension)
 
         results = await hybrid_search(
@@ -359,9 +359,10 @@ def doctor() -> None:
 
     # 5. embedding model
     try:
+        from synapto.config import embedding_provider_kwargs
         from synapto.embeddings.registry import get_provider
 
-        provider = get_provider(config.embedding_provider)
+        provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         click.echo(_green(f"embedding model: {provider.name} (dim={provider.dimension})"))
     except Exception as e:
         click.echo(_fail(f"embedding model: {e}", "check embedding provider config"))
@@ -539,7 +540,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
     async def _import():
         from psycopg.types.json import Jsonb
 
-        from synapto.config import load_config
+        from synapto.config import embedding_provider_kwargs, load_config
         from synapto.db.migrations import ensure_hnsw_index, run_migrations
         from synapto.db.postgres import PostgresClient
         from synapto.embeddings.registry import get_provider
@@ -551,7 +552,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
         await client.connect()
         await run_migrations(client)
 
-        provider = get_provider(config.embedding_provider)
+        provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         await ensure_hnsw_index(client, provider.dimension)
 
         with open(file_path) as f:
@@ -772,7 +773,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
 
         from psycopg.types.json import Jsonb
 
-        from synapto.config import load_config
+        from synapto.config import embedding_provider_kwargs, load_config
         from synapto.db.migrations import ensure_hnsw_index, run_migrations
         from synapto.db.postgres import PostgresClient
         from synapto.embeddings.registry import get_provider
@@ -783,7 +784,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
         await client.connect()
         await run_migrations(client)
 
-        provider = get_provider(config.embedding_provider)
+        provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         await ensure_hnsw_index(client, provider.dimension)
 
         mem_repo = MemoryRepository(client)

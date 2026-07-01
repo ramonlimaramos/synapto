@@ -16,6 +16,14 @@ def register(name: str, cls: type[EmbeddingProvider]) -> None:
     _PROVIDERS[name] = cls
 
 
+def _openai_kwargs(kwargs: dict) -> dict:
+    """Translate generic embedding config kwargs to the OpenAI provider shape."""
+    provider_kwargs = {k: v for k, v in kwargs.items() if k != "device"}
+    if "model_name" in provider_kwargs and "model" not in provider_kwargs:
+        provider_kwargs["model"] = provider_kwargs.pop("model_name")
+    return provider_kwargs
+
+
 def get_provider(name: str | None = None, **kwargs) -> EmbeddingProvider:
     """Get an embedding provider by name, or auto-select the best available.
 
@@ -29,7 +37,7 @@ def get_provider(name: str | None = None, **kwargs) -> EmbeddingProvider:
 
         if name.startswith("openai"):
             from synapto.embeddings.openai_provider import OpenAIProvider
-            return OpenAIProvider(**kwargs)
+            return OpenAIProvider(**_openai_kwargs(kwargs))
 
         if name.startswith("sentence-transformer"):
             from synapto.embeddings.sentence_transformer import SentenceTransformerProvider
@@ -41,7 +49,7 @@ def get_provider(name: str | None = None, **kwargs) -> EmbeddingProvider:
     if os.environ.get("OPENAI_API_KEY"):
         try:
             from synapto.embeddings.openai_provider import OpenAIProvider
-            provider = OpenAIProvider(**kwargs)
+            provider = OpenAIProvider(**_openai_kwargs(kwargs))
             logger.info("auto-selected provider: %s", provider.name)
             return provider
         except (ImportError, ValueError):

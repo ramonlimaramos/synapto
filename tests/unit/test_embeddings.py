@@ -21,10 +21,16 @@ class FakeSentenceTransformerModel:
     def get_embedding_dimension(self) -> int:
         return 384
 
-    def encode(self, texts: list[str], normalize_embeddings: bool) -> list[FakeVector]:
+    def encode(
+        self,
+        texts: list[str],
+        normalize_embeddings: bool,
+        show_progress_bar: bool,
+    ) -> list[FakeVector]:
         self.encode_calls.append({
             "texts": texts,
             "normalize_embeddings": normalize_embeddings,
+            "show_progress_bar": show_progress_bar,
         })
         return [_fake_vector(text) for text in texts]
 
@@ -49,7 +55,8 @@ def _fake_vector(text: str) -> FakeVector:
 def fake_sentence_transformer_model(monkeypatch):
     model = FakeSentenceTransformerModel()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("synapto.embeddings.sentence_transformer._load_model", lambda _model_name: model)
+    monkeypatch.delenv("SYNAPTO_EMBEDDING_DEVICE", raising=False)
+    monkeypatch.setattr("synapto.embeddings.sentence_transformer._load_model", lambda _model_name, _device: model)
     return model
 
 
@@ -80,7 +87,20 @@ class TestSentenceTransformerProvider:
         assert fake_sentence_transformer_model.encode_calls == [{
             "texts": ["hello world"],
             "normalize_embeddings": True,
+            "show_progress_bar": False,
         }]
+
+    def test_uses_explicit_device(self):
+        provider = SentenceTransformerProvider(device="cpu")
+
+        assert provider.device == "cpu"
+
+    def test_uses_environment_device(self, monkeypatch):
+        monkeypatch.setenv("SYNAPTO_EMBEDDING_DEVICE", "cpu")
+
+        provider = SentenceTransformerProvider()
+
+        assert provider.device == "cpu"
 
     def test_dimension_is_384(self, provider):
         assert provider.dimension == 384
@@ -112,6 +132,26 @@ class TestRegistry:
     def test_get_provider_by_name(self):
         provider = get_provider("sentence-transformers")
         assert isinstance(provider, SentenceTransformerProvider)
+
+    def test_get_provider_forwards_device(self):
+        provider = get_provider("sentence-transformers", device="cpu")
+
+        assert isinstance(provider, SentenceTransformerProvider)
+        assert provider.device == "cpu"
+
+    def test_get_openai_provider_drops_sentence_transformer_device(self, monkeypatch):
+        class FakeOpenAIProvider:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr(
+            "synapto.embeddings.openai_provider.OpenAIProvider",
+            FakeOpenAIProvider,
+        )
+
+        provider = get_provider("openai", model_name="text-embedding-3-small", device="cpu")
+
+        assert provider.kwargs == {"model": "text-embedding-3-small"}
 
     def test_get_provider_unknown_raises(self):
         with pytest.raises(ValueError, match="unknown"):

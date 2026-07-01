@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP stdio transport friendliness for long-running agent sessions** by adding a lightweight `ping` health tool, allowing sentence-transformers device override via `SYNAPTO_EMBEDDING_DEVICE` / `[embeddings].device`, disabling sentence-transformers encode progress bars, and ensuring CLI/MCP embedding provider paths share the same model/device configuration.
+
 ## [0.5.0] - 2026-07-01
 
 ### Added

@@ -161,6 +161,7 @@ Synapto is designed to be the primary memory sink for MCP-compatible agents. Age
 |------|-------------|
 | `remember` | Store a memory (entities and search vectors are created automatically) |
 | `recall` | Search memories by meaning |
+| `ping` | Check MCP transport health without touching PostgreSQL, Redis, or embeddings |
 | `get_memory` | Fetch the complete content and metadata for one recalled memory |
 | `get_memories` | Fetch complete content for multiple recalled memories |
 | `update_memory` | Replace, append, or patch fields on an existing memory |
@@ -240,8 +241,9 @@ dsn = "postgresql://localhost/synapto"
 url = "redis://localhost:6379/0"
 
 [embeddings]
-provider = ""  # auto-select (sentence-transformers on CPU, openai if API key set)
+provider = ""  # auto-select (sentence-transformers locally, openai if API key set)
 model = ""
+device = ""  # optional sentence-transformers device override, e.g. "cpu"
 
 [defaults]
 tenant = "default"
@@ -251,7 +253,7 @@ ephemeral_max_age_hours = 24
 purge_after_days = 30
 ```
 
-All values can be overridden with environment variables: `SYNAPTO_PG_DSN`, `SYNAPTO_REDIS_URL`, `SYNAPTO_EMBEDDING_PROVIDER`, `SYNAPTO_DEFAULT_TENANT`.
+All values can be overridden with environment variables: `SYNAPTO_PG_DSN`, `SYNAPTO_REDIS_URL`, `SYNAPTO_EMBEDDING_PROVIDER`, `SYNAPTO_EMBEDDING_MODEL`, `SYNAPTO_EMBEDDING_DEVICE`, `SYNAPTO_DEFAULT_TENANT`.
 
 ## Using as a Python library
 

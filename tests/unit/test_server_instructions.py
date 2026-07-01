@@ -12,8 +12,17 @@ def test_server_instructions_constant_is_non_empty():
 
 def test_server_instructions_mention_core_tools():
     """Instructions must reference the main tools so the LLM knows when to use them."""
-    for tool in ("recall", "remember"):
+    for tool in ("recall", "remember", "ping"):
         assert tool in SERVER_INSTRUCTIONS, f"instructions should mention {tool!r}"
+
+
+def test_server_instructions_guide_transport_health_checks():
+    for phrase in (
+        "transport health",
+        "does not touch PostgreSQL, Redis, or embeddings",
+        "Transport closed",
+    ):
+        assert phrase in SERVER_INSTRUCTIONS
 
 
 def test_server_instructions_cover_depth_layers():
