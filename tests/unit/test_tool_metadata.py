@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from synapto.server import ALWAYS_LOAD_META, mcp
+from synapto.server import ALWAYS_LOAD_META, mcp, ping
 
 ALWAYS_LOAD_TOOLS = ("remember", "recall")
 DEFERRED_TOOLS = (
@@ -17,6 +17,7 @@ DEFERRED_TOOLS = (
     "update_memory",
     "agent_handoff_template",
     "handoff_inbox_template",
+    "ping",
     "graph_query",
     "list_entities_tool",
     "memory_stats",
@@ -96,3 +97,15 @@ async def test_recall_description_guides_proactive_context_loading():
         "Follow up with get_memory",
     ):
         assert phrase in recall.description
+
+
+async def test_ping_tool_is_lightweight_health_check():
+    ping = await mcp.get_tool("ping")
+
+    assert ping.meta is None
+    assert "transport health" in ping.description
+    assert "does not touch databases, cache, or embeddings" in ping.description
+
+
+async def test_ping_returns_pong_without_dependencies():
+    assert await ping() == "pong"

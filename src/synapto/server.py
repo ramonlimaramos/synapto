@@ -12,7 +12,7 @@ from uuid import UUID
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from synapto.config import load_config
+from synapto.config import embedding_provider_kwargs, load_config
 from synapto.coordination import DEFAULT_HANDOFF_LIMIT, render_agent_handoff_prompt, render_handoff_inbox_prompt
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
 from synapto.db.postgres import PostgresClient
@@ -90,10 +90,7 @@ async def _lifespan(server):
     _cache = RedisCache(_config.redis_url)
     await _cache.connect()
 
-    kwargs = {}
-    if _config.embedding_model:
-        kwargs["model_name"] = _config.embedding_model
-    _provider = get_provider(_config.embedding_provider, **kwargs)
+    _provider = get_provider(_config.embedding_provider, **embedding_provider_kwargs(_config))
 
     await ensure_hnsw_index(_pg, _provider.dimension)
     logger.info("synapto MCP server ready (provider=%s, dim=%d)", _provider.name, _provider.dimension)
@@ -235,6 +232,12 @@ def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
 
 
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
+
+
+@mcp.tool
+async def ping() -> str:
+    """Lightweight transport health check that does not touch databases, cache, or embeddings."""
+    return "pong"
 
 
 @mcp.prompt(

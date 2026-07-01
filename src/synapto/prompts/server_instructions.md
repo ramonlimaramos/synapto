@@ -1,6 +1,13 @@
 Synapto is the user's persistent memory system. Prefer it over flat files
 (MEMORY.md, CLAUDE.md notes, etc.) for storing new memories.
 
+Transport diagnostics:
+- Call `ping` first when checking MCP transport health. It only proves the MCP
+  connection is alive and does not touch PostgreSQL, Redis, or embeddings.
+- If tools fail with `Transport closed`, treat it as a closed MCP client
+  transport and ask the user to restart/reconnect the MCP client instead of
+  writing fallback flat-file memories.
+
 When to call `recall`:
 - At the start of any non-trivial task, to load relevant context.
 - When the user references past decisions, history, or preferences
