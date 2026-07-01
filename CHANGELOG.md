@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-01
+
 ### Added
 
 - **optional memory subtype filtering** for governed context domains: `remember(..., subtype=...)` can persist free-form memory subcategories, and `recall(..., subtype=...)`, hybrid search, and vector search can filter by subtype while preserving tenant and depth-layer filtering (#58).
