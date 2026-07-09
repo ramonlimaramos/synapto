@@ -267,6 +267,81 @@ async def test_remember_rejects_overlong_summary_before_database_access():
         await server.remember("content", summary="x" * 256)
 
 
+async def test_remember_rejects_overlong_domain_before_database_access():
+    with pytest.raises(ToolError, match="domain exceeds 50 chars \\(got 51\\)"):
+        await server.remember("content", domain="x" * 51)
+
+
+async def test_remember_rejects_empty_domain_before_database_access():
+    with pytest.raises(ToolError, match="domain must not be empty"):
+        await server.remember("content", domain="")
+
+    with pytest.raises(ToolError, match="domain must not be empty"):
+        await server.remember("content", domain="   ")
+
+
+async def test_recall_rejects_overlong_domain(monkeypatch):
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+
+    with pytest.raises(ToolError, match="domain exceeds 50 chars \\(got 51\\)"):
+        await server.recall("anything", domain="x" * 51)
+
+
+class _RecordingCache:
+    def __init__(self) -> None:
+        self.cached = []
+
+    async def cache_memory(self, memory_id, payload):
+        self.cached.append((memory_id, payload))
+
+
+async def test_remember_persists_domain(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    cache = _RecordingCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", cache)
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+
+    output = await server.remember(
+        "async endpoints need explicit timeouts",
+        memory_type="project",
+        domain="python",
+        extract_entities=False,
+    )
+
+    memory_id = output.split()[2]
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["domain"] == "python"
+    assert cache.cached[0][1]["domain"] == "python"
+
+    await _cleanup(pg)
+
+
+async def test_remember_without_domain_stores_null(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    cache = _RecordingCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", cache)
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+
+    output = await server.remember("plain memory without domain", extract_entities=False)
+
+    memory_id = output.split()[2]
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["domain"] is None
+    assert cache.cached[0][1]["domain"] is None
+
+    await _cleanup(pg)
+
+
 async def test_update_memory_rejects_overlong_summary_before_database_access():
     with pytest.raises(ToolError, match="summary exceeds 255 chars \\(got 256\\)"):
         await server.update_memory("00000000-0000-0000-0000-000000000000", summary="x" * 256)
@@ -407,6 +482,26 @@ async def test_recall_passes_subtype_filter_to_hybrid_search(monkeypatch):
     await server.recall("coding standards", subtype="code_style")
 
     assert captured["subtype"] == "code_style"
+    # omitted domain must forward as None — the truthiness gate in hybrid_search
+    # relies on it to skip the filter
+    assert captured["domain"] is None
+
+
+async def test_recall_passes_domain_filter_to_hybrid_search(monkeypatch):
+    captured = {}
+
+    async def fake_hybrid_search(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
+
+    await server.recall("async patterns", domain="python")
+
+    assert captured["domain"] == "python"
 
 
 def _search_result_stub(**overrides):

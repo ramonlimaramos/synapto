@@ -124,6 +124,7 @@ MAX_BULK_MEMORY_IDS = 20
 MAX_SUMMARY_CHARS = 255
 MAX_MEMORY_TYPE_CHARS = 20
 MAX_SUBTYPE_CHARS = 50
+MAX_DOMAIN_CHARS = 50
 MAX_TENANT_CHARS = 100
 MAX_DEPTH_LAYER_CHARS = 20
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
@@ -162,12 +163,18 @@ def _validate_memory_fields(
     *,
     memory_type: str | None = None,
     subtype: str | None = None,
+    domain: str | None = None,
     tenant: str | None = None,
     depth_layer: str | None = None,
     summary: str | None = None,
 ) -> None:
     _validate_max_chars("memory_type", memory_type, MAX_MEMORY_TYPE_CHARS)
     _validate_max_chars("subtype", subtype, MAX_SUBTYPE_CHARS)
+    _validate_max_chars("domain", domain, MAX_DOMAIN_CHARS)
+    if domain is not None and not domain.strip():
+        # '' would persist as a non-NULL value that the truthiness-gated filter
+        # and output formatting can never match — reject instead of silently storing
+        raise ToolError("domain must not be empty or whitespace-only — omit it instead")
     _validate_max_chars("tenant", tenant, MAX_TENANT_CHARS)
     _validate_max_chars("depth_layer", depth_layer, MAX_DEPTH_LAYER_CHARS)
     _validate_max_chars(
@@ -364,6 +371,7 @@ async def remember(
     content: str,
     memory_type: str = "general",
     subtype: str | None = None,
+    domain: str | None = None,
     tenant: str | None = None,
     depth_layer: str = "working",
     summary: str | None = None,
@@ -397,6 +405,11 @@ async def remember(
     - project: working, stable, archived.
     - user: role, preference, skill, constraint.
 
+    Optional domain scopes a memory to a skill/repo/language bounded context
+    (for example python, elixir, synapto, jerry-workday). Store durable
+    skill/domain knowledge with a domain so recall can filter by domain instead
+    of guessing from the semantic query.
+
     Recommended depth_layer choices:
     - core: rules that should not expire, such as "always" or "never" feedback.
     - stable: context expected to last months, such as architecture decisions.
@@ -407,6 +420,7 @@ async def remember(
         content: memory content to store (text; no Synapto length limit)
         memory_type: category (general, user, feedback, project, reference; max 20 chars)
         subtype: optional free-form subcategory (recommended values documented; max 50 chars)
+        domain: optional skill/repo/language bounded context (max 50 chars)
         tenant: project/tenant scope (defaults to config default; max 100 chars)
         depth_layer: core, stable, working, or ephemeral (max 20 chars)
         summary: optional short summary (max 255 chars)
@@ -416,6 +430,7 @@ async def remember(
     _validate_memory_fields(
         memory_type=memory_type,
         subtype=subtype,
+        domain=domain,
         tenant=tenant,
         depth_layer=depth_layer,
         summary=summary,
@@ -434,6 +449,7 @@ async def remember(
         embedding_dim=provider.dimension,
         memory_type=memory_type,
         subtype=subtype,
+        domain=domain,
         tenant=t,
         depth_layer=depth_layer,
         summary=summary,
@@ -458,7 +474,7 @@ async def remember(
     cache = _get_cache()
     await cache.cache_memory(
         memory_id,
-        {"content": content, "type": memory_type, "subtype": subtype, "tenant": t},
+        {"content": content, "type": memory_type, "subtype": subtype, "domain": domain, "tenant": t},
     )
 
     entity_count = len(entity_names)
@@ -563,6 +579,7 @@ async def recall(
     tenant: str | None = None,
     depth_layer: str | None = None,
     subtype: str | None = None,
+    domain: str | None = None,
     limit: int = 10,
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
 ) -> str:
@@ -575,22 +592,25 @@ async def recall(
     waiting for the user to ask.
 
     Use tenant to scope project-specific memory, depth_layer to narrow by decay
-    semantics, and subtype to narrow within a memory_type, such as workflow or
-    code_style feedback. Follow up with get_memory when a recalled result needs
-    full content, metadata, or linked entities.
+    semantics, subtype to narrow within a memory_type, such as workflow or
+    code_style feedback, and domain to narrow to a skill/repo/language bounded context
+    (for example python or jerry-workday) without semantic query guessing.
+    Follow up with get_memory when a recalled result needs full content,
+    metadata, or linked entities.
 
     Args:
         query: natural language search query
         tenant: filter to a specific project/tenant
         depth_layer: filter to a specific depth layer (core, stable, working, ephemeral)
         subtype: optional memory subcategory filter (for example code_style or workflow)
+        domain: optional bounded-context filter (skill/repo/language; max 50 chars)
         limit: max results to return
         preview_chars: max content characters per result (0-1000)
     """
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
-    _validate_memory_fields(subtype=subtype)
+    _validate_memory_fields(subtype=subtype, domain=domain)
     preview_chars = max(0, min(preview_chars, MAX_RECALL_PREVIEW_CHARS))
 
     results = await hybrid_search(
@@ -600,6 +620,7 @@ async def recall(
         tenant=t,
         depth_layer=depth_layer,
         subtype=subtype,
+        domain=domain,
         limit=limit,
     )
 

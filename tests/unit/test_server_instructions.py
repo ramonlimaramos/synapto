@@ -43,3 +43,8 @@ def test_server_instructions_cover_handoffs():
 def test_fastmcp_instance_has_instructions_attached():
     """The FastMCP instance must expose the instructions so MCP clients can inject them."""
     assert mcp.instructions == SERVER_INSTRUCTIONS
+
+
+def test_server_instructions_cover_domain_scoping():
+    for phrase in ("domain", "bounded context", "domain="):
+        assert phrase in SERVER_INSTRUCTIONS, f"instructions should mention {phrase!r}"
