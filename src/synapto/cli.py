@@ -205,7 +205,8 @@ def configure_mcp(client: str, tenant: str | None, yes: bool, home: str | None) 
 @click.option("--tenant", "-t", default=None, help="tenant/project scope")
 @click.option("--limit", "-n", default=10, help="max results")
 @click.option("--depth", "-d", default=None, help="depth layer filter")
-def search(query: str, tenant: str | None, limit: int, depth: str | None) -> None:
+@click.option("--domain", default=None, help="domain filter (skill/repo/language bounded context)")
+def search(query: str, tenant: str | None, limit: int, depth: str | None, domain: str | None) -> None:
     """Search memories from the command line."""
 
     async def _search():
@@ -225,7 +226,7 @@ def search(query: str, tenant: str | None, limit: int, depth: str | None) -> Non
         await ensure_hnsw_index(client, provider.dimension)
 
         results = await hybrid_search(
-            client, provider, query, tenant=t, depth_layer=depth, limit=limit
+            client, provider, query, tenant=t, depth_layer=depth, domain=domain, limit=limit
         )
 
         if not results:
@@ -505,7 +506,7 @@ def export_cmd(tenant: str | None, output: str) -> None:
         t = tenant or config.default_tenant
         rows = await client.execute(
             """
-            SELECT id, content, summary, type, subtype, tenant, depth_layer, metadata, created_at, accessed_at
+            SELECT id, content, summary, type, subtype, domain, tenant, depth_layer, metadata, created_at, accessed_at
             FROM memories WHERE deleted_at IS NULL AND tenant = %s ORDER BY created_at;
             """,
             (t,),
@@ -573,8 +574,8 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
             await client.execute(
                 """
                 INSERT INTO memories
-                    (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
                 (
                     content,
@@ -583,6 +584,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
                     provider.dimension,
                     item.get("type", "general"),
                     item.get("subtype"),
+                    item.get("domain"),
                     t,
                     item.get("depth_layer", "stable"),
                     Jsonb(item.get("metadata", {})),
@@ -821,8 +823,8 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
                                 """
                                 INSERT INTO memories
                                     (content, summary, embedding, embedding_dim,
-                                     type, subtype, tenant, depth_layer, metadata)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                     type, subtype, domain, tenant, depth_layer, metadata)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                                 """,
                                 (
                                     mem.content,
@@ -830,6 +832,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
                                     embedding,
                                     provider.dimension,
                                     mem.memory_type,
+                                    None,
                                     None,
                                     config.default_tenant,
                                     mem.depth_layer,

@@ -41,15 +41,15 @@ async def pg(pg):
     await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
 
 
-async def _insert_memory(pg, provider, content, depth_layer="working", mem_type="general", subtype=None):
+async def _insert_memory(pg, provider, content, depth_layer="working", mem_type="general", subtype=None, domain=None):
     """Helper to insert a memory with embedding."""
     emb = await provider.embed_one(content)
     row = await pg.execute_one(
         """
-        INSERT INTO memories (content, embedding, embedding_dim, type, subtype, tenant, depth_layer)
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO memories (content, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """,
-        (content, emb, provider.dimension, mem_type, subtype, TENANT, depth_layer),
+        (content, emb, provider.dimension, mem_type, subtype, domain, TENANT, depth_layer),
     )
     return row["id"]
 
@@ -101,6 +101,49 @@ class TestHybridSearch:
 
         assert results
         assert all(r.subtype == "workflow" for r in results)
+
+    async def test_domain_filter(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(
+            pg,
+            provider,
+            "async endpoints need explicit timeouts",
+            mem_type="project",
+            domain="python",
+        )
+        await _insert_memory(
+            pg,
+            provider,
+            "genserver restarts should be transient",
+            mem_type="project",
+            domain="elixir",
+        )
+
+        results = await hybrid_search(pg, provider, "explicit timeouts", tenant=TENANT, domain="python")
+
+        assert results
+        assert all(r.domain == "python" for r in results)
+
+    async def test_domain_none_returns_all_domains(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "python fact about tooling", domain="python")
+        await _insert_memory(pg, provider, "elixir fact about tooling", domain="elixir")
+
+        results = await hybrid_search(pg, provider, "fact about tooling", tenant=TENANT, domain=None)
+        domains = {r.domain for r in results}
+        assert len(domains) >= 2
+
+    async def test_domain_filter_excludes_legacy_rows_without_domain(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "legacy note about tooling")
+        await _insert_memory(pg, provider, "python note about tooling", domain="python")
+
+        unfiltered = await hybrid_search(pg, provider, "note about tooling", tenant=TENANT)
+        assert {r.domain for r in unfiltered} == {None, "python"}
+
+        filtered = await hybrid_search(pg, provider, "note about tooling", tenant=TENANT, domain="python")
+        assert filtered
+        assert all(r.domain == "python" for r in filtered)
 
 
 class TestHybridSearchParameterization:
@@ -167,6 +210,37 @@ class TestHybridSearchParameterization:
             "debug session",
             tenant=TENANT,
             subtype="workflow' OR '1'='1",
+        )
+        assert len(results) == 0
+
+    async def test_domain_with_special_characters(self, pg, provider):
+        """Ensure domain with SQL injection payload doesn't break or leak data."""
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "python note should not leak", domain="python")
+
+        results = await hybrid_search(
+            pg,
+            provider,
+            "python note",
+            tenant=TENANT,
+            domain="python' OR '1'='1",
+        )
+
+        assert len(results) == 0
+
+    async def test_vector_search_domain_parameterized(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "python debug session", domain="python")
+
+        results = await vector_search(pg, provider, "debug session", tenant=TENANT, domain="python")
+        assert all(r.domain == "python" for r in results)
+
+        results = await vector_search(
+            pg,
+            provider,
+            "debug session",
+            tenant=TENANT,
+            domain="python' OR '1'='1",
         )
         assert len(results) == 0
 
