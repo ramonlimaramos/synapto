@@ -190,6 +190,12 @@ def _format_memory(
         f"id: {row['id']}",
         f"tenant: {row['tenant']}",
         f"type: {row['type']}",
+    ]
+    if row.get("subtype"):
+        lines.append(f"subtype: {row['subtype']}")
+    if row.get("domain"):
+        lines.append(f"domain: {row['domain']}")
+    lines += [
         f"depth_layer: {row['depth_layer']}",
         f"trust_score: {float(row.get('trust_score', 0.5)):.2f}",
         f"decay_score: {float(row.get('decay_score', 1.0)):.2f}",
@@ -197,8 +203,6 @@ def _format_memory(
         f"created_at: {_format_timestamp(row.get('created_at'))}",
         f"accessed_at: {_format_timestamp(row.get('accessed_at'))}",
     ]
-    if row.get("subtype"):
-        lines.insert(3, f"subtype: {row['subtype']}")
     if row.get("summary"):
         lines.append(f"summary: {row['summary']}")
     lines.append(f"metadata: {_format_json(row.get('metadata'))}")
@@ -611,10 +615,12 @@ async def recall(
             if len(r.content) > preview_chars:
                 preview += "..."
         type_label = r.type if not getattr(r, "subtype", None) else f"{r.type}/{r.subtype}"
+        domain = getattr(r, "domain", None)
+        domain_label = f" domain={domain}" if domain else ""
         memories.append(
             f"[{r.depth_layer}] ({type_label}) score={r.rrf_score:.4f} "
             f"decay={r.decay_score:.2f} trust={r.trust_score:.2f} "
-            f"tenant={r.tenant} created_at={_format_timestamp(r.created_at)}\n"
+            f"tenant={r.tenant}{domain_label} created_at={_format_timestamp(r.created_at)}\n"
             f"  {preview}\n"
             f"  id={r.id}"
         )

@@ -18,10 +18,11 @@ from synapto.db.postgres import PostgresClient
 # ---------------------------------------------------------------------------
 
 _INSERT = """
-    INSERT INTO memories (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
+    INSERT INTO memories
+        (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata)
     VALUES (
         %(content)s, %(summary)s, %(emb)s, %(dim)s, %(type)s, %(subtype)s,
-        %(tenant)s, %(depth)s, %(meta)s
+        %(domain)s, %(tenant)s, %(depth)s, %(meta)s
     )
     RETURNING id;
 """
@@ -33,6 +34,7 @@ _GET_BY_ID = """
         summary,
         type,
         subtype,
+        domain,
         tenant,
         depth_layer,
         metadata,
@@ -52,6 +54,7 @@ _GET_BY_IDS = """
         summary,
         type,
         subtype,
+        domain,
         tenant,
         depth_layer,
         metadata,
@@ -85,6 +88,7 @@ _UPDATE_MEMORY = """
         summary,
         type,
         subtype,
+        domain,
         tenant,
         depth_layer,
         metadata,
@@ -194,6 +198,7 @@ class MemoryRepository:
         tenant: str,
         depth_layer: str,
         subtype: str | None = None,
+        domain: str | None = None,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
@@ -206,6 +211,7 @@ class MemoryRepository:
                 "dim": embedding_dim,
                 "type": memory_type,
                 "subtype": subtype,
+                "domain": domain,
                 "tenant": tenant,
                 "depth": depth_layer,
                 "meta": Jsonb(metadata or {}),
