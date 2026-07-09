@@ -109,3 +109,31 @@ async def test_ping_tool_is_lightweight_health_check():
 
 async def test_ping_returns_pong_without_dependencies():
     assert await ping() == "pong"
+
+
+async def test_remember_description_documents_domain_bounded_context():
+    remember = await mcp.get_tool("remember")
+
+    for phrase in (
+        "domain: optional skill/repo/language bounded context (max 50 chars)",
+        "jerry-workday",
+        "recall can filter by domain",
+    ):
+        assert phrase in remember.description
+
+
+async def test_recall_description_documents_domain_filter():
+    recall = await mcp.get_tool("recall")
+
+    for phrase in (
+        "domain to narrow to a skill/repo/language bounded context",
+        "domain: optional bounded-context filter (skill/repo/language; max 50 chars)",
+    ):
+        assert phrase in recall.description
+
+
+async def test_domain_parameter_exposed_in_tool_input_schemas():
+    """MCP clients must see 'domain' in the remember/recall input schemas."""
+    for name in ("remember", "recall"):
+        tool = await mcp.get_tool(name)
+        assert "domain" in tool.parameters["properties"], f"{name!r} must expose a domain input parameter"

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
+- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
 
 ## [0.5.0] - 2026-07-01
 
