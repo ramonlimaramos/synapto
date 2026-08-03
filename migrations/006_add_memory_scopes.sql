@@ -14,15 +14,37 @@ CREATE TABLE IF NOT EXISTS memory_scopes (
     source VARCHAR(20) NOT NULL DEFAULT 'explicit',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (memory_id, scope_type, scope_key),
-    -- defense in depth for the canonical-key rule enforced in synapto.scopes:
-    -- a row that bypasses the value object still cannot store uppercase,
-    -- whitespace, control, or non-ASCII characters. '/' is permitted here
-    -- because repo keys are owner/repo; the per-type rules live in Python.
-    CONSTRAINT memory_scopes_key_canonical
-        CHECK (scope_key ~ '^[a-z0-9][a-z0-9._/-]*$'),
-    CONSTRAINT memory_scopes_type_not_blank
-        CHECK (scope_type <> '')
+
+    -- The row-local half of the governed contract, mirroring synapto.scopes so
+    -- a write that bypasses the value object still cannot land. Anchored with
+    -- \A/\Z rather than ^/$ to state end-of-string explicitly.
+    --
+    -- Adding a scope type is a migration on purpose: the accepted set is part
+    -- of the contract, not configuration.
+    CONSTRAINT memory_scopes_type_allowed
+        CHECK (scope_type IN ('global', 'product', 'repo', 'language', 'skill', 'workflow')),
+
+    -- Per-type key grammar. 'repo' splits into an owner segment (alphanumeric
+    -- with inner hyphens) and a repository segment that may start with a dot —
+    -- github/.github is a real repository — but must contain at least one
+    -- alphanumeric character, which also rules out '.' and '..'.
+    CONSTRAINT memory_scopes_key_grammar CHECK (
+        CASE scope_type
+            WHEN 'global' THEN scope_key = 'all'
+            WHEN 'repo' THEN scope_key ~
+                '\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/[a-z0-9._-]*[a-z0-9][a-z0-9._-]*\Z'
+            ELSE scope_key ~ '\A[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z'
+        END
+    ),
+
+    CONSTRAINT memory_scopes_source_not_blank
+        CHECK (source <> '')
 );
+
+-- The aggregate rules — 'global' not combining with other scopes, and the
+-- 20-scope cap — are cross-row and cannot be expressed as row-local CHECKs.
+-- ScopeRepository enforces them under a FOR UPDATE lock on the parent memory;
+-- see src/synapto/repositories/scopes.py.
 
 -- Applicability queries start from the scope and find memories, so the lookup
 -- index leads with (scope_type, scope_key); memory_id is included to keep the

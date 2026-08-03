@@ -43,16 +43,29 @@ MAX_SCOPE_TYPE_CHARS = 20
 
 REPO_SEGMENTS = 2
 
-# ASCII lowercase, digits, and inner . _ - separators. Anchored, so anything
-# outside the class — whitespace, control characters, non-ASCII, uppercase — is
-# rejected rather than stripped.
-_CANONICAL_KEY = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
+# ASCII lowercase, digits, and inner . _ - separators. Always applied with
+# fullmatch(): with match() and a trailing "$", Python accepts a final newline,
+# so "python\n" would have passed as canonical.
+_CANONICAL_KEY = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?")
+
+# Repository names are not plain identifiers. GitHub owners are alphanumeric
+# with inner hyphens, but repository names may legitimately start with a dot —
+# github/.github is a real, active repository — so the two segments need
+# separate grammars. A repository segment must still contain at least one
+# alphanumeric character, which also rules out "." and "..".
+_REPO_OWNER = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+_REPO_NAME = re.compile(r"(?=[a-z0-9._-]*[a-z0-9])[a-z0-9._-]+")
 
 _SCOPE_MAPPING_KEYS = frozenset({"type", "key"})
 
 
 class InvalidScopeError(ValueError):
     """Raised when a scope cannot be accepted as written."""
+
+
+def _matches(pattern: re.Pattern[str], value: str) -> bool:
+    """Anchored membership test — fullmatch, never match."""
+    return pattern.fullmatch(value) is not None
 
 
 def _canonical_suggestion(value: str) -> str | None:
@@ -62,13 +75,15 @@ def _canonical_suggestion(value: str) -> str | None:
     caller's behalf.
     """
     candidate = value.strip().lower()
-    if candidate and candidate != value and _CANONICAL_KEY.match(candidate):
+    if candidate and candidate != value and _matches(_CANONICAL_KEY, candidate):
         return candidate
     return None
 
 
-def _validate_key_charset(scope_key: str, *, label: str = "scope_key") -> None:
-    if _CANONICAL_KEY.match(scope_key):
+def _validate_key_charset(
+    scope_key: str, *, label: str = "scope_key", pattern: re.Pattern[str] = _CANONICAL_KEY
+) -> None:
+    if _matches(pattern, scope_key):
         return
 
     suggestion = _canonical_suggestion(scope_key)
@@ -85,20 +100,34 @@ class ScopeRef:
 
     Frozen and ordered, so a set of refs has one deterministic rendering:
     sorting is by ``(scope_type, scope_key)``, matching the field order.
-    Construct through :meth:`parse` — the constructor performs no validation.
+
+    Validation runs in ``__post_init__``, so **every** construction path is
+    checked — the direct constructor, :meth:`parse`, ``copy``/``replace``, and
+    rows rehydrated from the database alike. An invalid ``ScopeRef`` cannot
+    exist, so no consumer has to ask whether the one it holds was validated.
     """
 
     scope_type: str
     scope_key: str
 
+    def __post_init__(self) -> None:
+        self._validate(self.scope_type, self.scope_key)
+
     @classmethod
     def parse(cls, scope_type: object, scope_key: object) -> ScopeRef:
-        """Validate and build a scope reference.
+        """Build a scope reference from untrusted input.
+
+        Equivalent to the constructor — kept as the explicit entry point for
+        payloads whose types are not yet known.
 
         Raises:
             InvalidScopeError: the type is unknown, or the key is not canonical
                 for that type.
         """
+        return cls(scope_type=scope_type, scope_key=scope_key)  # type: ignore[arg-type]
+
+    @classmethod
+    def _validate(cls, scope_type: object, scope_key: object) -> None:
         if not isinstance(scope_type, str) or isinstance(scope_type, bool):
             raise InvalidScopeError(f"scope type must be a string, got {type(scope_type).__name__}")
         if scope_type not in SCOPE_TYPES:
@@ -110,9 +139,7 @@ class ScopeRef:
         if not scope_key:
             raise InvalidScopeError(f"scope key for type {scope_type!r} must not be empty")
         if len(scope_key) > MAX_SCOPE_KEY_CHARS:
-            raise InvalidScopeError(
-                f"scope key exceeds {MAX_SCOPE_KEY_CHARS} chars (got {len(scope_key)})"
-            )
+            raise InvalidScopeError(f"scope key exceeds {MAX_SCOPE_KEY_CHARS} chars (got {len(scope_key)})")
 
         if scope_type == GLOBAL_TYPE:
             if scope_key != GLOBAL_KEY:
@@ -123,12 +150,8 @@ class ScopeRef:
             cls._validate_repo_key(scope_key)
         else:
             if "/" in scope_key:
-                raise InvalidScopeError(
-                    f"scope type {scope_type!r} does not accept '/' in its key: {scope_key!r}"
-                )
+                raise InvalidScopeError(f"scope type {scope_type!r} does not accept '/' in its key: {scope_key!r}")
             _validate_key_charset(scope_key)
-
-        return cls(scope_type=scope_type, scope_key=scope_key)
 
     @staticmethod
     def _validate_repo_key(scope_key: str) -> None:
@@ -139,8 +162,9 @@ class ScopeRef:
                 f"repo scope key must be canonical 'owner/repo', got {scope_key!r} "
                 "(URLs, SSH remotes, and filesystem paths are not accepted)"
             )
-        for segment in segments:
-            _validate_key_charset(segment, label="repo scope segment")
+        owner, name = segments
+        _validate_key_charset(owner, label="repo owner segment", pattern=_REPO_OWNER)
+        _validate_key_charset(name, label="repo name segment", pattern=_REPO_NAME)
 
 
 @dataclass(frozen=True)
@@ -149,9 +173,39 @@ class ScopeSet:
 
     Empty is valid and means "unscoped" — a memory that no scope filter selects,
     not an invalid one.
+
+    Like :class:`ScopeRef`, the aggregate invariants are enforced in
+    ``__post_init__``, so the direct constructor cannot produce a set that
+    :meth:`parse` would have rejected. Ordering and deduplication are applied
+    there too, which is why the field is normalized rather than validated: two
+    sets built from the same scopes in any order are equal.
     """
 
     scopes: tuple[ScopeRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.scopes, (str, bytes, Mapping)) or not isinstance(self.scopes, Iterable):
+            raise InvalidScopeError(f"scopes must be a collection of ScopeRef, got {type(self.scopes).__name__}")
+
+        refs = tuple(self.scopes)
+        for ref in refs:
+            if not isinstance(ref, ScopeRef):
+                raise InvalidScopeError(f"each scope must be a ScopeRef, got {type(ref).__name__}")
+
+        unique = set(refs)
+        self._validate_aggregate(unique)
+        object.__setattr__(self, "scopes", tuple(sorted(unique)))
+
+    @staticmethod
+    def _validate_aggregate(refs: set[ScopeRef]) -> None:
+        if len(refs) > MAX_SCOPES:
+            raise InvalidScopeError(f"at most {MAX_SCOPES} unique scopes are allowed, got {len(refs)}")
+
+        if any(ref.scope_type == GLOBAL_TYPE for ref in refs) and len(refs) > 1:
+            others = ", ".join(sorted(f"{r.scope_type}:{r.scope_key}" for r in refs if r.scope_type != GLOBAL_TYPE))
+            raise InvalidScopeError(
+                f"scope type {GLOBAL_TYPE!r} cannot be combined with other scopes (also given: {others})"
+            )
 
     def __bool__(self) -> bool:
         return bool(self.scopes)
@@ -180,31 +234,16 @@ class ScopeSet:
         # from an explicit [] (clear it). Collapsing them here would erase that
         # distinction before the caller can act on it.
         if isinstance(items, (str, bytes, Mapping)) or not isinstance(items, Iterable):
-            raise InvalidScopeError(
-                f"scopes must be a list of scope objects, got {type(items).__name__}"
-            )
+            raise InvalidScopeError(f"scopes must be a list of scope objects, got {type(items).__name__}")
 
-        refs = {cls._parse_item(item) for item in items}
-
-        if len(refs) > MAX_SCOPES:
-            raise InvalidScopeError(f"at most {MAX_SCOPES} unique scopes are allowed, got {len(refs)}")
-
-        if any(ref.scope_type == GLOBAL_TYPE for ref in refs) and len(refs) > 1:
-            others = ", ".join(sorted(f"{r.scope_type}:{r.scope_key}" for r in refs if r.scope_type != GLOBAL_TYPE))
-            raise InvalidScopeError(
-                f"scope type {GLOBAL_TYPE!r} cannot be combined with other scopes (also given: {others})"
-            )
-
-        return cls(scopes=tuple(sorted(refs)))
+        return cls(scopes=tuple(cls._parse_item(item) for item in items))
 
     @staticmethod
     def _parse_item(item: object) -> ScopeRef:
         if isinstance(item, ScopeRef):
             return item
         if not isinstance(item, Mapping):
-            raise InvalidScopeError(
-                f"each scope must be an object with 'type' and 'key', got {type(item).__name__}"
-            )
+            raise InvalidScopeError(f"each scope must be an object with 'type' and 'key', got {type(item).__name__}")
 
         unknown = set(item) - _SCOPE_MAPPING_KEYS
         if unknown:
