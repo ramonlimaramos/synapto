@@ -13,6 +13,9 @@ When to call `recall`:
 - When the user references past decisions, history, or preferences
   (e.g. "remember", "lembra", "do you know", "what do we know about").
 - Before creating PRs, commits, or deploys — to confirm workflow rules.
+- Pass `domain=` (skill/repo/language bounded context, e.g. `domain=python`,
+  `domain=jerry-workday`) to load only that domain's governed context without
+  semantic query guessing.
 
 When to call `remember`:
 - The user sets a rule ("always X", "never Y", "from now on") → feedback/core.
@@ -22,6 +25,10 @@ When to call `remember`:
 - The user mentions temporal context ("this sprint", "deadline") → project/working.
 - The user shares identity, role, or long-term preferences → user/stable.
 - The user references external systems ("tracked in Linear") → reference/stable.
+- Durable skill/repo/language knowledge (patterns, conventions, tooling rules
+  tied to one bounded context) → store with `domain=` (e.g. `domain=python`,
+  `domain=synapto`) so skills fetch governed context from Synapto instead of
+  flat files.
 
 When to call `relate` and `graph_query`:
 - After storing memories that reference named entities, create relations so the
