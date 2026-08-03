@@ -403,10 +403,15 @@ class MemoryRepository:
         and psycopg refuses a list mixing ``UUID`` and ``str``, which callers
         produce naturally when ids arrive from both the database and JSON.
 
-        Results follow the requested order rather than PostgreSQL's physical
-        order, so a caller can zip them against its own list without repairing
-        the order itself. Duplicated ids yield the row once, at its first
-        requested position; ids with no active row are simply absent.
+        The result is the **ordered subsequence** of the unique active requested
+        ids: requested order is preserved, a duplicated id yields its row once
+        at the first requested position, and an id with no active row — missing
+        or soft-deleted — is absent rather than a placeholder.
+
+        Because entries can be missing, the result must never be zipped against
+        the requested list: ``[missing, existing]`` returns ``[existing]``, and
+        zipping would silently attribute that row to the missing id. Callers
+        needing correlation must map by ``row["id"]``.
 
         Scopes come from one batched query rather than one per row: this feeds
         the recall render path, where a per-memory lookup would be an N+1 on

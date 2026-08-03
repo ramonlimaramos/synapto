@@ -19,10 +19,22 @@ OTHER_TENANT = "test_scope_integration_other"
 
 @pytest.fixture
 async def pg(pg):
+    """Leave the table and its HNSW index in a deterministic physical state.
+
+    A per-tenant DELETE leaves dead tuples in the HNSW graph. Because an
+    approximate scan applies filters *after* the index scan, that churn made a
+    downstream vector test under-return and fail about 9% of the time — the
+    tests were the trigger, not the production query.
+
+    TRUNCATE resets the heap and the index instead of tombstoning rows, so the
+    state each test starts from is identical. CASCADE covers the tables holding
+    a foreign key to memories. This is safe here and only here: the guarded
+    fixture has already proven the database is a disposable ``*_test`` one, and
+    the suite runs serially with function-scoped data.
+    """
     await run_migrations(pg)
     yield pg
-    for tenant in (TENANT, OTHER_TENANT):
-        await pg.execute("DELETE FROM memories WHERE tenant = %s;", (tenant,))
+    await pg.execute("TRUNCATE TABLE memories CASCADE;")
 
 
 def _scopes(*pairs) -> ScopeSet:
@@ -548,13 +560,23 @@ class TestAuthorizationLocksTheParent:
 class TestDomainAndScopesConflict:
     """Finding 3: the two applicability axes cannot be supplied together."""
 
-    @pytest.mark.parametrize("scopes", [ScopeSet(), None])
-    async def test_create_accepts_either_axis_alone(self, pg, provider, scopes):
+    async def test_create_accepts_the_legacy_axis_alone(self, pg, provider):
         repo = MemoryRepository(pg)
 
-        memory_id = await _create(repo, provider, f"one axis {scopes}", domain="python", scopes=None)
+        memory_id = await _create(repo, provider, "domain only", domain="python", scopes=None)
 
-        assert (await repo.get_by_id(memory_id))["domain"] == "python"
+        row = await repo.get_by_id(memory_id)
+        assert row["domain"] == "python"
+        assert row["scopes"] == ScopeSet()
+
+    async def test_create_accepts_the_typed_axis_alone(self, pg, provider):
+        repo = MemoryRepository(pg)
+
+        memory_id = await _create(repo, provider, "scopes only", scopes=_scopes(("language", "python")))
+
+        row = await repo.get_by_id(memory_id)
+        assert row["domain"] is None
+        assert row["scopes"] == _scopes(("language", "python"))
 
     async def test_create_rejects_both(self, pg, provider):
         repo = MemoryRepository(pg)
