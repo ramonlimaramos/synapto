@@ -65,7 +65,7 @@ jobs:
         env:
           POSTGRES_USER: synapto
           POSTGRES_PASSWORD: synapto
-          POSTGRES_DB: synapto
+          POSTGRES_DB: synapto_test
         ports:
           - 5432:5432
         options: >-
@@ -101,10 +101,10 @@ jobs:
           UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
       - name: create pgvector extension
-        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
       - name: test
         env:
-          SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto
+          SYNAPTO_TEST_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto_test
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing

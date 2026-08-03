@@ -11,8 +11,13 @@ import pytest
 from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
 from synapto.embeddings.base import EmbeddingProvider
+from tests.db_guard import (
+    TEST_DSN_ENV,
+    UnsafeTestDatabaseError,
+    resolve_test_dsn,
+    verify_disposable_database,
+)
 
-DSN = os.environ.get("SYNAPTO_PG_DSN", "postgresql://localhost/synapto")
 REDIS_URL = os.environ.get("SYNAPTO_REDIS_URL", "redis://localhost:6379/1")
 TEST_EMBEDDING_DIM = 384
 
@@ -76,8 +81,35 @@ def provider():
 
 @pytest.fixture
 async def pg():
-    client = PostgresClient(DSN, min_size=1, max_size=2)
+    """Connect to a disposable test database, or skip.
+
+    This suite is destructive — it rolls migrations down and truncates tables —
+    so it never guesses a DSN and never touches the production one. See
+    ``tests/db_guard.py`` for the two fail-closed rules.
+    """
+    dsn = resolve_test_dsn()
+    if dsn is None:
+        pytest.skip(
+            f"{TEST_DSN_ENV} is not set — export it pointing at a disposable "
+            "*_test database to run the PostgreSQL-backed tests "
+            "(see 'Running the tests' in README.md)"
+        )
+
+    client = PostgresClient(dsn, min_size=1, max_size=2)
     await client.connect()
+
+    unsafe_reason = None
+    try:
+        await verify_disposable_database(client)
+    except UnsafeTestDatabaseError as exc:
+        unsafe_reason = str(exc)
+
+    if unsafe_reason is not None:
+        # close before failing so a rejected run does not also leak the pool, and
+        # fail outside the except block so the report is the reason, not a chain
+        await client.close()
+        pytest.fail(unsafe_reason, pytrace=False)
+
     yield client
     await client.close()
 

@@ -296,8 +296,29 @@ cd synapto
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 synapto init
-pytest                          # 83 tests
 ```
+
+### Running the tests
+
+The PostgreSQL-backed tests are **destructive** — they roll migrations down (dropping and recreating columns) and truncate tables. They therefore refuse to run against anything but a disposable database, and they never read your production `SYNAPTO_PG_DSN`.
+
+Create a throwaway database once:
+
+```bash
+createdb synapto_test
+psql -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+```
+
+Then point `SYNAPTO_TEST_PG_DSN` at it:
+
+```bash
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test pytest
+```
+
+Two fail-closed rules protect your real data:
+
+- **No DSN, no connection.** With `SYNAPTO_TEST_PG_DSN` unset, the database-backed tests are skipped — never silently pointed at a default. `pytest` alone still runs every test that does not need PostgreSQL.
+- **The database must be named `*_test`.** The suite asks the live connection for `current_database()` and aborts before any destructive setup if the name does not end in `_test`. Parsing the DSN is not enough: a DSN can omit the database name, and service files can redirect it.
 
 ## License
 
