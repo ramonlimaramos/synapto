@@ -50,12 +50,18 @@ dependencies = [
     "joserfc>=1.6.7",
     # pinned to fix GHSA-4xgf-cpjx-pc3j, pulled transitively by the MCP stack.
     "pydantic-settings>=2.14.2",
+    # pinned to fix PYSEC-2026-3481/PYSEC-2026-3482/PYSEC-2026-3483,
+    # pulled transitively by fastmcp.
+    "mcp>=1.28.1",
+    # pinned to fix PYSEC-2026-3447, pulled transitively by the build/ML stack.
+    "setuptools>=83.0.0",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",
     "sentence-transformers>=3.0",
     "pydantic>=2.0",
-    "click>=8.0",
+    # pinned to fix PYSEC-2026-2132.
+    "click>=8.3.3",
     "tomli>=2.0;python_version<'3.11'",
     "tomli-w>=1.0",
     "numpy>=1.24",

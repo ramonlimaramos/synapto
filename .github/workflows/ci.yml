@@ -50,10 +50,7 @@ jobs:
         run: uv run bandit -r src/synapto/ -c pyproject.toml
 
       - name: pip-audit dependency scan
-        # CVE-2025-3000 is currently reported against torch, pulled transitively by
-        # sentence-transformers, with no fixed version available from pip-audit
-        # as of 2026-06-14. Keep the rest of the dependency audit active.
-        run: uv run pip-audit --ignore-vuln CVE-2025-3000
+        run: uv run pip-audit
 
   test:
     runs-on: ubuntu-latest
