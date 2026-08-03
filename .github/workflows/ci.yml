@@ -55,6 +55,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     needs: [lint, security]
+    env:
+      # job-scoped on purpose: if the test step's env block is refactored away,
+      # the strict gate must not go with it. Without this a misconfigured job
+      # would report success with every PostgreSQL test silently skipped.
+      SYNAPTO_REQUIRE_TEST_PG: "1"
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -106,8 +111,5 @@ jobs:
       - name: test
         env:
           SYNAPTO_TEST_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto_test
-          # fail instead of skipping: a green run with every PostgreSQL test
-          # skipped would be a false pass
-          SYNAPTO_REQUIRE_TEST_PG: "1"
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing

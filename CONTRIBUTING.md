@@ -50,20 +50,37 @@ psql -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION
 ### The two commands
 
 ```bash
-make test           # partial: skips every PostgreSQL test, needs no database
-make test-all       # full suite: requires SYNAPTO_TEST_PG_DSN
+make test           # no PostgreSQL: the database tests are skipped. Still needs Redis.
+make test-all       # the full suite, against the disposable synapto_test database
 ```
 
-`make test` is safe anywhere and runs everything that does not need PostgreSQL — but it is **not** the full suite, and it will report success while the database tests are skipped. Use `make test-all` before opening a PR.
+**`make test-all` is the pre-PR command.** `make test` is not the full suite — it reports success while every PostgreSQL test is skipped. It is also not dependency-free: the cache fixture needs Redis, so `make docker-up` (or a local Redis at the URL below) is required either way.
 
-Directly with pytest:
+`make test` clears `SYNAPTO_TEST_PG_DSN` and `SYNAPTO_REQUIRE_TEST_PG` from your shell, so it behaves the same whether or not you have them exported.
+
+Both targets default to the ports `docker-compose.yml` publishes. Override per invocation:
 
 ```bash
-uv run pytest tests/ -v                                                  # partial, DB tests skipped
-SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test uv run pytest -v # full
+TEST_PG_DSN=postgresql://localhost/synapto_test TEST_REDIS_URL=redis://localhost:6379/1 make test-all
 ```
 
-### Environment variables
+Directly with pytest, the environment variables are used as-is:
+
+```bash
+uv run pytest tests/ -v                                                     # no PostgreSQL, DB tests skipped
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test uv run pytest -v    # full suite
+```
+
+### Variables
+
+Make variables (override on the `make` command line):
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `TEST_PG_DSN` | DSN `make test-all` passes as `SYNAPTO_TEST_PG_DSN`. An exported `SYNAPTO_TEST_PG_DSN` does **not** override it — set `TEST_PG_DSN` instead. | `postgresql://synapto:synapto@localhost:5433/synapto_test` (docker-compose port) |
+| `TEST_REDIS_URL` | Redis URL both targets pass as `SYNAPTO_REDIS_URL`. | `redis://localhost:6380/1` (docker-compose port) |
+
+Environment variables (read by pytest directly):
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
@@ -108,7 +125,7 @@ chore(synapto): bump dependency versions
 
 1. Fork the repository and create a branch from `main`
 2. Make your changes, including tests for new functionality
-3. Run `ruff check` and `pytest` to verify everything passes
+3. Run `uv run ruff check src/ tests/` and `make test-all` to verify everything passes — `make test` alone skips every PostgreSQL test
 4. Commit with the format described above
 5. Open a PR against `main` with a clear description of what and why
 
@@ -120,7 +137,7 @@ chore(synapto): bump dependency versions
 
 ### PR Checklist
 
-- [ ] Tests pass (`uv run pytest tests/`)
+- [ ] Full suite passes (`make test-all`) — `make test` skips every PostgreSQL test
 - [ ] Lint passes (`uv run ruff check src/ tests/`)
 - [ ] New features include tests
 - [ ] Commit messages follow the format above

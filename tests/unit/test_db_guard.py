@@ -309,6 +309,25 @@ class TestOpenVerifiedClient:
 
         assert _RecordingClient.instances == []
 
+    @pytest.mark.parametrize(
+        "error",
+        [RuntimeError("pool refused to open"), asyncio.CancelledError()],
+        ids=["runtime_error", "cancelled"],
+    )
+    async def test_closes_a_partially_opened_client_when_connect_fails(self, error):
+        # PostgresClient assigns self._pool before awaiting pool.open(), so a
+        # failure during open leaves a partial pool and its workers behind
+        # unless connect() is inside the cleanup boundary
+        def factory(dsn, **kwargs):
+            return _RecordingClient(dsn, connect_error=error, **kwargs)
+
+        with pytest.raises(type(error)):
+            await open_verified_client(
+                "postgresql://localhost/synapto_test", factory=factory, precheck=_noop_precheck
+            )
+
+        assert _RecordingClient.instances[-1].closed is True
+
     async def test_closes_the_pool_on_cancellation(self):
         # cancellation is not an Exception subclass; the cleanup must still run
         class _CancellingClient(_RecordingClient):

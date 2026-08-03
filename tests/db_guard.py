@@ -214,14 +214,17 @@ async def open_verified_client(dsn: str, factory=GuardedPostgresClient, precheck
     await precheck(dsn)
 
     client = factory(dsn, min_size=1, max_size=2)
-    await client.connect()
     try:
+        # connect() must be inside the cleanup boundary: PostgresClient assigns
+        # self._pool before awaiting pool.open(), so a failure or cancellation
+        # during open leaves a partial pool and its workers running
+        await client.connect()
         # assert through the pooled path too, so the guarantee covers the client
         # the tests actually use, not just the probe connection
         await verify_disposable_database(client)
     except BaseException:
-        # every exit path after the pool is open must close it: verification
-        # errors, malformed results, timeouts, and cancellation alike
+        # every exit path must close: connect failures, verification errors,
+        # malformed results, timeouts, and cancellation alike
         await client.close()
         raise
     return client
