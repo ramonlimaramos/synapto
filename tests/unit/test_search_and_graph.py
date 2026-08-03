@@ -18,6 +18,7 @@ from synapto.graph.relations import (
     create_relation_by_name,
     get_relations,
 )
+from synapto.repositories.memories import MemoryRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search, vector_search
 
@@ -144,6 +145,33 @@ class TestHybridSearch:
         filtered = await hybrid_search(pg, provider, "note about tooling", tenant=TENANT, domain="python")
         assert filtered
         assert all(r.domain == "python" for r in filtered)
+
+    async def test_domain_filter_is_canonicalized(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        await _insert_memory(pg, provider, "python note about tooling", domain="python")
+
+        # the read path applies the same canonicalization as the write path, so a
+        # padded/capitalized filter is not a silent miss
+        results = await hybrid_search(pg, provider, "note about tooling", tenant=TENANT, domain="  PyThOn  ")
+
+        assert results
+        assert all(r.domain == "python" for r in results)
+
+    async def test_repository_create_canonicalizes_domain(self, pg, provider):
+        # writes that bypass the MCP boundary must still store the canonical key
+        memory_id = await MemoryRepository(pg).create(
+            content="written straight through the repository",
+            embedding=await provider.embed_one("written straight through the repository"),
+            embedding_dim=provider.dimension,
+            memory_type="project",
+            tenant=TENANT,
+            depth_layer="working",
+            domain="  Elixir  ",
+        )
+
+        row = await MemoryRepository(pg).get_by_id(memory_id)
+        assert row is not None
+        assert row["domain"] == "elixir"
 
 
 class TestHybridSearchParameterization:

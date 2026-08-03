@@ -364,6 +364,79 @@ class TestDomainCliPlumbing:
         _, insert_params = fake_client.calls[0]
         assert insert_params[6] is None
 
+    def test_import_canonicalizes_domain(self, monkeypatch, tmp_path):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        source = tmp_path / "memories.json"
+        source.write_text(json.dumps([{"content": "fact", "domain": "  Python  "}]))
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        assert result.exit_code == 0, result.output
+        _, insert_params = fake_client.calls[0]
+        assert insert_params[6] == "python"
+
+    def test_import_rejects_overlong_domain_naming_the_item(self, monkeypatch, tmp_path):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        source = tmp_path / "memories.json"
+        source.write_text(
+            json.dumps(
+                [
+                    {"content": "ok", "domain": "python"},
+                    {"content": "bad", "domain": "x" * 51},
+                ]
+            )
+        )
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        # previously this reached VARCHAR(50) and surfaced as a raw psycopg error
+        # with no indication of which payload entry was at fault
+        assert result.exit_code != 0
+        assert "item 1" in result.output
+        assert "domain exceeds 50 chars (got 51)" in result.output
+
+    def test_import_rejects_blank_domain(self, monkeypatch, tmp_path):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        source = tmp_path / "memories.json"
+        source.write_text(json.dumps([{"content": "fact", "domain": "   "}]))
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        # matches the MCP contract: a blank domain is a mistake, not "no domain"
+        assert result.exit_code != 0
+        assert "domain must not be empty" in result.output
+
+    def test_search_canonicalizes_domain_filter(self, monkeypatch):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+        captured = {}
+
+        async def fake_hybrid_search(client, provider, query, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr("synapto.search.hybrid.hybrid_search", fake_hybrid_search)
+
+        result = CliRunner().invoke(main, ["search", "timeouts", "--domain", "  Python  "])
+
+        assert result.exit_code == 0, result.output
+        assert captured["domain"] == "python"
+
+    def test_search_rejects_overlong_domain_without_traceback(self, monkeypatch):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        result = CliRunner().invoke(main, ["search", "timeouts", "--domain", "x" * 51])
+
+        assert result.exit_code != 0
+        assert "domain exceeds 50 chars (got 51)" in result.output
+
     def test_export_import_round_trip_preserves_domain(self, monkeypatch, tmp_path):
         base_row = {
             "content": "fact",

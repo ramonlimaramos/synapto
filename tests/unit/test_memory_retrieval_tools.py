@@ -342,6 +342,89 @@ async def test_remember_without_domain_stores_null(pg, provider, monkeypatch):
     await _cleanup(pg)
 
 
+async def test_remember_canonicalizes_domain_before_persisting(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    cache = _RecordingCache()
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", cache)
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+
+    output = await server.remember(
+        "async endpoints need explicit timeouts",
+        memory_type="project",
+        domain="  Python  ",
+        extract_entities=False,
+    )
+
+    memory_id = output.split()[2]
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    # the padded, capitalized spelling must land on the same key a plain
+    # recall(domain="python") filters by, or the memory is unreachable
+    assert row["domain"] == "python"
+    assert cache.cached[0][1]["domain"] == "python"
+
+    await _cleanup(pg)
+
+
+async def test_remember_accepts_domain_that_only_fits_after_trimming(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_provider", provider)
+    monkeypatch.setattr(server, "_cache", _RecordingCache())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+
+    output = await server.remember(
+        "fits once trimmed",
+        domain="  " + "x" * 50 + "  ",
+        extract_entities=False,
+    )
+
+    row = await MemoryRepository(pg).get_by_id(output.split()[2])
+    assert row is not None
+    assert row["domain"] == "x" * 50
+
+    await _cleanup(pg)
+
+
+async def test_recall_canonicalizes_domain_filter(monkeypatch):
+    captured = {}
+
+    async def _fake_hybrid_search(*_args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", _fake_hybrid_search)
+
+    await server.recall("anything", domain="  Jerry-Workday  ")
+
+    assert captured["domain"] == "jerry-workday"
+
+
+async def test_recall_treats_blank_domain_as_no_filter(monkeypatch):
+    captured = {}
+
+    async def _fake_hybrid_search(*_args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", _fake_hybrid_search)
+
+    # a blank filter is an absent filter on read, unlike on write where it is an error
+    await server.recall("anything", domain="   ")
+
+    assert captured["domain"] is None
+
+
 async def test_update_memory_rejects_overlong_summary_before_database_access():
     with pytest.raises(ToolError, match="summary exceeds 255 chars \\(got 256\\)"):
         await server.update_memory("00000000-0000-0000-0000-000000000000", summary="x" * 256)

@@ -12,6 +12,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
+from synapto.domain_scope import normalize_domain
 
 # ---------------------------------------------------------------------------
 # SQL constants
@@ -202,6 +203,9 @@ class MemoryRepository:
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
+        # canonicalized here rather than only at the MCP boundary, so every write
+        # path (CLI import, migrations, future callers) stores the same key that
+        # search filters on
         row = await self._db.execute_one(
             _INSERT,
             {
@@ -211,7 +215,7 @@ class MemoryRepository:
                 "dim": embedding_dim,
                 "type": memory_type,
                 "subtype": subtype,
-                "domain": domain,
+                "domain": normalize_domain(domain),
                 "tenant": tenant,
                 "depth": depth_layer,
                 "meta": Jsonb(metadata or {}),

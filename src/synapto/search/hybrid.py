@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from synapto.db.postgres import PostgresClient
+from synapto.domain_scope import normalize_domain_filter
 from synapto.embeddings.base import EmbeddingProvider
 from synapto.repositories.memories import MemoryRepository
 
@@ -151,9 +152,12 @@ def _build_memory_filters(
     if subtype:
         filters.append("AND subtype = %(subtype)s")
         params["subtype"] = subtype
-    if domain:
+    # canonicalized on read with the same rule used on write, so a mixed-case or
+    # padded filter still matches the stored key
+    canonical_domain = normalize_domain_filter(domain)
+    if canonical_domain:
         filters.append("AND domain = %(domain)s")
-        params["domain"] = domain
+        params["domain"] = canonical_domain
     return f"\n{indent}".join(filters), params
 
 

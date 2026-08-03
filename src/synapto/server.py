@@ -18,6 +18,7 @@ from synapto.db.migrations import ensure_hnsw_index, run_migrations
 from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
 from synapto.decay.maintenance import cleanup_ephemeral, update_decay_scores
+from synapto.domain_scope import InvalidDomainError, normalize_domain, normalize_domain_filter
 from synapto.embeddings.base import EmbeddingProvider
 from synapto.embeddings.registry import get_provider
 from synapto.graph.entities import create_entity, extract_entities_from_text
@@ -124,7 +125,6 @@ MAX_BULK_MEMORY_IDS = 20
 MAX_SUMMARY_CHARS = 255
 MAX_MEMORY_TYPE_CHARS = 20
 MAX_SUBTYPE_CHARS = 50
-MAX_DOMAIN_CHARS = 50
 MAX_TENANT_CHARS = 100
 MAX_DEPTH_LAYER_CHARS = 20
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
@@ -159,22 +159,28 @@ def _validate_max_chars(field: str, value: str | None, max_chars: int, *, guidan
     raise ToolError(message)
 
 
+def _normalized_domain(domain: str | None, *, as_filter: bool = False) -> str | None:
+    """Canonicalize a domain argument, surfacing rejections as MCP tool errors.
+
+    Filters are lenient about blank values (absent filter); stored domains are not.
+    """
+    normalize = normalize_domain_filter if as_filter else normalize_domain
+    try:
+        return normalize(domain)
+    except InvalidDomainError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 def _validate_memory_fields(
     *,
     memory_type: str | None = None,
     subtype: str | None = None,
-    domain: str | None = None,
     tenant: str | None = None,
     depth_layer: str | None = None,
     summary: str | None = None,
 ) -> None:
     _validate_max_chars("memory_type", memory_type, MAX_MEMORY_TYPE_CHARS)
     _validate_max_chars("subtype", subtype, MAX_SUBTYPE_CHARS)
-    _validate_max_chars("domain", domain, MAX_DOMAIN_CHARS)
-    if domain is not None and not domain.strip():
-        # '' would persist as a non-NULL value that the truthiness-gated filter
-        # and output formatting can never match — reject instead of silently storing
-        raise ToolError("domain must not be empty or whitespace-only — omit it instead")
     _validate_max_chars("tenant", tenant, MAX_TENANT_CHARS)
     _validate_max_chars("depth_layer", depth_layer, MAX_DEPTH_LAYER_CHARS)
     _validate_max_chars(
@@ -430,11 +436,11 @@ async def remember(
     _validate_memory_fields(
         memory_type=memory_type,
         subtype=subtype,
-        domain=domain,
         tenant=tenant,
         depth_layer=depth_layer,
         summary=summary,
     )
+    domain = _normalized_domain(domain)
 
     pg = _get_pg()
     provider = _get_provider()
@@ -610,7 +616,8 @@ async def recall(
     pg = _get_pg()
     provider = _get_provider()
     t = tenant or _config.default_tenant
-    _validate_memory_fields(subtype=subtype, domain=domain)
+    _validate_memory_fields(subtype=subtype)
+    domain = _normalized_domain(domain, as_filter=True)
     preview_chars = max(0, min(preview_chars, MAX_RECALL_PREVIEW_CHARS))
 
     results = await hybrid_search(

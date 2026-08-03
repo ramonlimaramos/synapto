@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from synapto import __version__
+from synapto.domain_scope import InvalidDomainError, normalize_domain, normalize_domain_filter
 
 logger = logging.getLogger("synapto.cli")
 
@@ -208,6 +209,10 @@ def configure_mcp(client: str, tenant: str | None, yes: bool, home: str | None) 
 @click.option("--domain", default=None, help="domain filter (skill/repo/language bounded context)")
 def search(query: str, tenant: str | None, limit: int, depth: str | None, domain: str | None) -> None:
     """Search memories from the command line."""
+    try:
+        domain = normalize_domain_filter(domain)
+    except InvalidDomainError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     async def _search():
         from synapto.config import embedding_provider_kwargs, load_config
@@ -566,10 +571,16 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
             data = _parse_markdown_memories(raw, t)
 
         count = 0
-        for item in data:
+        for index, item in enumerate(data):
             content = item.get("content", "")
             if not content.strip():
                 continue
+            try:
+                domain = normalize_domain(item.get("domain"))
+            except InvalidDomainError as exc:
+                # without this the payload reaches VARCHAR(50) and surfaces as a
+                # raw psycopg error with no indication of which item was at fault
+                raise click.ClickException(f"item {index}: {exc}") from exc
             emb = await provider.embed_one(content)
             await client.execute(
                 """
@@ -584,7 +595,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
                     provider.dimension,
                     item.get("type", "general"),
                     item.get("subtype"),
-                    item.get("domain"),
+                    domain,
                     t,
                     item.get("depth_layer", "stable"),
                     Jsonb(item.get("metadata", {})),
