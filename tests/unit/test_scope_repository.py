@@ -7,7 +7,7 @@ from psycopg import errors as pg_errors
 
 from synapto.db.migrations import run_migrations
 from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError
-from synapto.scopes import GLOBAL_KEY, GLOBAL_TYPE, InvalidScopeError, ScopeRef, ScopeSet
+from synapto.scopes import GLOBAL_KEY, GLOBAL_TYPE, MAX_SCOPES, InvalidScopeError, ScopeRef, ScopeSet
 
 TENANT = "test_scope_repository"
 
@@ -352,28 +352,44 @@ class TestCallerOwnedTransaction:
 
 
 class TestConcurrentReplacesSerialize:
-    async def test_two_replaces_do_not_leave_their_union(self, pg):
-        # without the FOR UPDATE lock both transactions delete an empty set and
-        # then commit different rows, so the memory ends up with both sets
-        import asyncio
+    async def test_a_second_replace_blocks_on_the_parent_row_lock(self, pg):
+        """Deterministic, not scheduler-dependent.
 
+        The previous version raced two tasks with ``sleep(0)`` and asserted a
+        singleton result, which passes even without the lock whenever the first
+        transaction happens to commit before the second acquires a connection.
+
+        Here the first transaction is held open holding the lock, and the second
+        is given a short ``lock_timeout``. With ``FOR UPDATE`` it times out; drop
+        the lock and it proceeds, so the test fails for the right reason and
+        never hangs.
+        """
         memory_id = await _insert_memory(pg)
         repo = ScopeRepository(pg)
 
-        async def replace(scopes, delay):
-            async with pg.acquire() as conn:
-                await asyncio.sleep(delay)
-                await repo.replace_on(conn, memory_id, scopes)
+        async with pg.acquire() as holder:
+            await repo.replace_on(holder, memory_id, _scopes(("language", "python")))
+            # holder's transaction stays open, so it still holds the row lock
 
-        await asyncio.gather(
-            replace(_scopes(("language", "python")), 0),
-            replace(_scopes(("repo", "owner/repo")), 0),
-        )
+            async with pg.acquire() as contender:
+                await contender.execute("SET LOCAL lock_timeout = '250ms';")
 
-        stored = await repo.get_for_memory(memory_id)
-        # one replacement wins entirely; the union would be two scopes
-        assert len(stored) == 1
-        assert stored in (_scopes(("language", "python")), _scopes(("repo", "owner/repo")))
+                with pytest.raises(pg_errors.LockNotAvailable):
+                    await repo.replace_on(contender, memory_id, _scopes(("repo", "owner/repo")))
+
+                await contender.rollback()
+
+        assert await repo.get_for_memory(memory_id) == _scopes(("language", "python"))
+
+    async def test_the_lock_is_released_after_the_first_transaction_commits(self, pg):
+        # serialization must not mean permanent blocking
+        memory_id = await _insert_memory(pg)
+        repo = ScopeRepository(pg)
+
+        await repo.replace(memory_id, _scopes(("language", "python")))
+        await repo.replace(memory_id, _scopes(("repo", "owner/repo")))
+
+        assert await repo.get_for_memory(memory_id) == _scopes(("repo", "owner/repo"))
 
 
 class TestMutationsRequireAnExistingMemory:
@@ -519,3 +535,57 @@ class TestStorageConstraintsMirrorTheContract:
                 "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
                 (memory_id, "language", key),
             )
+
+
+class TestAggregateRulesFailClosedOnRead:
+    """The rules the schema cannot express must still not escape as valid data.
+
+    ``global`` not combining, and the 20-scope cap, span rows — no row-local
+    CHECK can enforce them, so each of these states is reachable by raw SQL.
+    Rehydration is the backstop.
+    """
+
+    async def test_global_planted_alongside_a_local_scope_is_rejected(self, pg):
+        memory_id = await _insert_memory(pg)
+        # both rows are individually valid; only together do they break the rule
+        for scope_type, scope_key in ((GLOBAL_TYPE, GLOBAL_KEY), ("language", "python")):
+            await pg.execute(
+                "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                (memory_id, scope_type, scope_key),
+            )
+
+        with pytest.raises(InvalidScopeError, match=GLOBAL_TYPE):
+            await ScopeRepository(pg).get_for_memory(memory_id)
+
+    async def test_more_than_the_cap_planted_as_raw_rows_is_rejected(self, pg):
+        memory_id = await _insert_memory(pg)
+        for index in range(MAX_SCOPES + 1):
+            await pg.execute(
+                "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                (memory_id, "language", f"lang{index}"),
+            )
+
+        with pytest.raises(InvalidScopeError, match=str(MAX_SCOPES)):
+            await ScopeRepository(pg).get_for_memory(memory_id)
+
+    async def test_the_batch_read_fails_closed_on_the_same_states(self, pg):
+        memory_id = await _insert_memory(pg)
+        for scope_type, scope_key in ((GLOBAL_TYPE, GLOBAL_KEY), ("language", "python")):
+            await pg.execute(
+                "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                (memory_id, scope_type, scope_key),
+            )
+
+        with pytest.raises(InvalidScopeError):
+            await ScopeRepository(pg).get_for_memories([memory_id])
+
+    async def test_exactly_the_cap_is_still_readable(self, pg):
+        # the boundary must not be off by one
+        memory_id = await _insert_memory(pg)
+        for index in range(MAX_SCOPES):
+            await pg.execute(
+                "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                (memory_id, "language", f"lang{index}"),
+            )
+
+        assert len(await ScopeRepository(pg).get_for_memory(memory_id)) == MAX_SCOPES

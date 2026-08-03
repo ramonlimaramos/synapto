@@ -9,8 +9,15 @@
 -- assertion about where a memory applies.
 CREATE TABLE IF NOT EXISTS memory_scopes (
     memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    scope_type VARCHAR(20) NOT NULL,
-    scope_key VARCHAR(128) NOT NULL,
+    -- COLLATE "C" is load-bearing, not decoration. PostgreSQL documents regex
+    -- ranges like [a-z] as collating-sequence dependent, so under a non-C
+    -- database collation the CHECK below would not portably mean "ASCII
+    -- lowercase" — a raw or backfill write could satisfy SQL and then fail
+    -- ScopeRef rehydration in Python. Declaring it on the column also makes
+    -- primary-key and index equality byte-for-byte, which is what a storage key
+    -- has to be.
+    scope_type VARCHAR(20) COLLATE "C" NOT NULL,
+    scope_key VARCHAR(128) COLLATE "C" NOT NULL,
     source VARCHAR(20) NOT NULL DEFAULT 'explicit',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (memory_id, scope_type, scope_key),

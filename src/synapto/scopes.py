@@ -58,6 +58,17 @@ _REPO_NAME = re.compile(r"(?=[a-z0-9._-]*[a-z0-9])[a-z0-9._-]+")
 
 _SCOPE_MAPPING_KEYS = frozenset({"type", "key"})
 
+# Each grammar describes itself, so a rejection names the rule it broke rather
+# than a generic one the caller may not even be subject to.
+_GRAMMAR_DESCRIPTIONS = {
+    _CANONICAL_KEY: ("keys must be ASCII lowercase letters, digits, and inner '.', '_' or '-'"),
+    _REPO_OWNER: ("a repository owner must be ASCII lowercase letters, digits, and inner '-'"),
+    _REPO_NAME: (
+        "a repository name must be ASCII lowercase letters, digits, '.', '_' or '-', "
+        "and contain at least one letter or digit"
+    ),
+}
+
 
 class InvalidScopeError(ValueError):
     """Raised when a scope cannot be accepted as written."""
@@ -68,14 +79,18 @@ def _matches(pattern: re.Pattern[str], value: str) -> bool:
     return pattern.fullmatch(value) is not None
 
 
-def _canonical_suggestion(value: str) -> str | None:
+def _canonical_suggestion(value: str, pattern: re.Pattern[str]) -> str | None:
     """Return the canonical spelling of ``value``, when trimming/lowering yields one.
 
-    Used only to make rejections actionable — it is never applied on the
-    caller's behalf.
+    Checked against the grammar actually in force, not the generic one: an owner
+    segment rejects underscores, so suggesting ``owner_name`` for ``Owner_Name``
+    would send the caller to a second rejection — and ``.GitHub`` has the valid
+    canonical form ``.github`` that the generic grammar would refuse to suggest.
+
+    Used only to make rejections actionable — never applied on the caller's behalf.
     """
     candidate = value.strip().lower()
-    if candidate and candidate != value and _matches(_CANONICAL_KEY, candidate):
+    if candidate and candidate != value and _matches(pattern, candidate):
         return candidate
     return None
 
@@ -86,11 +101,11 @@ def _validate_key_charset(
     if _matches(pattern, scope_key):
         return
 
-    suggestion = _canonical_suggestion(scope_key)
+    suggestion = _canonical_suggestion(scope_key, pattern)
     hint = f" — did you mean {suggestion!r}?" if suggestion else ""
     raise InvalidScopeError(
-        f"{label} {scope_key!r} is not canonical: keys must be ASCII lowercase letters, digits, "
-        f"and inner '.', '_' or '-', and must arrive already trimmed and lowercased{hint}"
+        f"{label} {scope_key!r} is not canonical: {_GRAMMAR_DESCRIPTIONS[pattern]}, "
+        f"and must arrive already trimmed and lowercased{hint}"
     )
 
 

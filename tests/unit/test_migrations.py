@@ -272,6 +272,25 @@ class TestMemoryScopesMigration:
         assert len(rows) == 1
         assert rows[0]["confdeltype"] == "c", "expected ON DELETE CASCADE"
 
+    async def test_scope_identity_columns_use_deterministic_collation(self, pg):
+        # regex ranges like [a-z] are collating-sequence dependent, so without
+        # COLLATE "C" the CHECK grammar would not portably mean ASCII lowercase
+        # on a user-created database — and PK/index equality would not be
+        # byte-for-byte either
+        await run_migrations(pg)
+        rows = await pg.execute(
+            """
+            SELECT a.attname, co.collname
+            FROM pg_attribute a
+            LEFT JOIN pg_collation co ON co.oid = a.attcollation
+            WHERE a.attrelid = 'memory_scopes'::regclass
+              AND a.attname IN ('scope_type', 'scope_key');
+            """
+        )
+        collations = {r["attname"]: r["collname"] for r in rows}
+
+        assert collations == {"scope_type": "C", "scope_key": "C"}
+
     async def test_migrate_down_removes_the_table_and_index(self, pg):
         await run_migrations(pg)
 
