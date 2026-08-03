@@ -12,7 +12,13 @@ from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.scopes import ScopeRepository
-from synapto.scopes import GLOBAL_KEY, GLOBAL_TYPE, InvalidScopeError, ScopeSet
+from synapto.scopes import (
+    GLOBAL_KEY,
+    GLOBAL_TYPE,
+    InvalidScopeError,
+    ScopeSet,
+    reject_conflicting_scope_arguments,
+)
 
 logger = logging.getLogger("synapto.search.hybrid")
 
@@ -216,6 +222,8 @@ def _build_memory_filters(
     Complexity: O(1) time and space because the supported filter set is fixed.
     User values stay in params so SQL rendering remains injection-safe.
     """
+    reject_conflicting_scope_arguments(domain, scopes)
+
     filters: list[str] = []
     params: dict[str, Any] = {}
     if depth_layer:
@@ -374,6 +382,7 @@ async def vector_search(
     sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(sql, params)
+    scopes_by_memory = await _hydrate_scopes(client, [row["id"] for row in rows])
 
     return [
         SearchResult(
@@ -383,6 +392,7 @@ async def vector_search(
             type=row["type"],
             subtype=row.get("subtype"),
             domain=row.get("domain"),
+            scopes=scopes_by_memory.get(row["id"], ScopeSet()),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],

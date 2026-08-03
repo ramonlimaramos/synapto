@@ -109,6 +109,24 @@ def _validate_key_charset(
     )
 
 
+def reject_conflicting_scope_arguments(domain: str | None, scopes: ScopeSet | None) -> None:
+    """Refuse a request that supplies both the legacy and the typed axis.
+
+    Composing them would silently AND two different applicability models, and
+    picking one would silently ignore what the caller asked for. An explicitly
+    empty ``ScopeSet`` still counts as supplied — it is a deliberate assertion
+    about scopes, not an absence.
+
+    This is about *request arguments*, not storage: legacy ``domain`` data
+    coexisting with scopes on a stored row stays valid until PR-4 backfills it.
+    """
+    if domain is not None and scopes is not None:
+        raise InvalidScopeError(
+            "domain and scopes cannot be combined — 'domain' is the legacy single-value axis "
+            "superseded by typed scopes; pass one or the other"
+        )
+
+
 @dataclass(frozen=True, order=True)
 class ScopeRef:
     """One validated ``(scope_type, scope_key)`` pair.

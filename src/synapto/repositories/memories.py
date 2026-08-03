@@ -12,8 +12,8 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
-from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError
-from synapto.scopes import ScopeSet
+from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError, _as_uuid
+from synapto.scopes import ScopeSet, reject_conflicting_scope_arguments
 
 # ---------------------------------------------------------------------------
 # SQL constants
@@ -101,9 +101,16 @@ _UPDATE_MEMORY = """
         accessed_at;
 """
 
+# FOR UPDATE, not a plain SELECT: a check that only reads leaves a window in
+# which another transaction can soft-delete the memory or move it to a different
+# tenant before the scope write lands. Locking here makes the qualification and
+# the mutation one atomic step — under READ COMMITTED the row is re-checked
+# after the lock is granted, so a concurrent delete or ownership change causes
+# this query to return nothing rather than authorizing a stale view.
 _AUTHORIZE_MEMORY = """
     SELECT id FROM memories
-    WHERE id = %(memory_id)s AND tenant = %(tenant)s AND deleted_at IS NULL;
+    WHERE id = %(memory_id)s AND tenant = %(tenant)s AND deleted_at IS NULL
+    FOR UPDATE;
 """
 
 _SOFT_DELETE = """
@@ -223,6 +230,8 @@ class MemoryRepository:
         scopes that say where it applies. Omitting it, or passing an empty set,
         creates an unscoped memory.
         """
+        reject_conflicting_scope_arguments(domain, scopes)
+
         params = {
             "content": content,
             "summary": summary,
@@ -284,6 +293,78 @@ class MemoryRepository:
     async def update_hrr(self, memory_id: UUID, hrr_vector: bytes, hrr_dim: int) -> None:
         await self._db.execute(_UPDATE_HRR, (hrr_vector, hrr_dim, memory_id))
 
+    async def update_with_scopes(
+        self,
+        memory_id: str | UUID,
+        *,
+        tenant: str,
+        content: str | None = None,
+        embedding: list[float] | None = None,
+        embedding_dim: int | None = None,
+        summary: str | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+        scopes: ScopeSet | None = None,
+    ) -> dict[str, Any] | None:
+        """Update a memory's fields and its scopes in one transaction.
+
+        Without this, a caller updating both would commit the field change
+        through one connection and the scope change through another: a scope
+        failure would leave the content updated and the memberships stale, which
+        is exactly the partial commit the mutation contract forbids.
+
+        The parent is locked and authorized once, and every write rides that
+        same connection. Scope semantics match :meth:`replace_scopes` — ``None``
+        preserves, an empty set clears, a non-empty set replaces.
+
+        Work is O(s) for s scopes, capped at 20, in one transaction.
+        """
+        async with self._db.acquire() as conn:
+            await self._authorize(conn, memory_id, tenant)
+
+            cursor = await conn.execute(
+                _UPDATE_MEMORY,
+                self._update_params(
+                    memory_id,
+                    content=content,
+                    embedding=embedding,
+                    embedding_dim=embedding_dim,
+                    summary=summary,
+                    metadata_patch=metadata_patch,
+                ),
+            )
+            row = await cursor.fetchone()
+
+            if scopes is not None:
+                await ScopeRepository(self._db).replace_on(conn, memory_id, scopes)
+                if row is not None:
+                    row["scopes"] = scopes
+
+        return row
+
+    @staticmethod
+    def _update_params(
+        memory_id: str | UUID,
+        *,
+        content: str | None,
+        embedding: list[float] | None,
+        embedding_dim: int | None,
+        summary: str | None,
+        metadata_patch: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "id": memory_id,
+            "content_provided": content is not None,
+            "content": content,
+            "summary_provided": summary is not None,
+            "summary": summary,
+            "embedding_provided": embedding is not None,
+            "emb": embedding,
+            "dim_provided": embedding_dim is not None,
+            "dim": embedding_dim,
+            "meta_provided": metadata_patch is not None,
+            "meta": Jsonb(metadata_patch or {}),
+        }
+
     async def update(
         self,
         memory_id: str | UUID,
@@ -296,19 +377,14 @@ class MemoryRepository:
     ) -> dict[str, Any] | None:
         return await self._db.execute_one(
             _UPDATE_MEMORY,
-            {
-                "id": memory_id,
-                "content_provided": content is not None,
-                "content": content,
-                "summary_provided": summary is not None,
-                "summary": summary,
-                "embedding_provided": embedding is not None,
-                "emb": embedding,
-                "dim_provided": embedding_dim is not None,
-                "dim": embedding_dim,
-                "meta_provided": metadata_patch is not None,
-                "meta": Jsonb(metadata_patch or {}),
-            },
+            self._update_params(
+                memory_id,
+                content=content,
+                embedding=embedding,
+                embedding_dim=embedding_dim,
+                summary=summary,
+                metadata_patch=metadata_patch,
+            ),
         )
 
     async def get_by_id(self, memory_id: str | UUID, *, include_scopes: bool = True) -> dict[str, Any] | None:
@@ -321,7 +397,16 @@ class MemoryRepository:
         return row
 
     async def get_by_ids(self, memory_ids: list[str | UUID], *, include_scopes: bool = True) -> list[dict[str, Any]]:
-        """Fetch active memories, carrying ordered scopes.
+        """Fetch active memories in the order requested, carrying ordered scopes.
+
+        Ids are normalized to :class:`UUID` first: the query binds a ``uuid[]``
+        and psycopg refuses a list mixing ``UUID`` and ``str``, which callers
+        produce naturally when ids arrive from both the database and JSON.
+
+        Results follow the requested order rather than PostgreSQL's physical
+        order, so a caller can zip them against its own list without repairing
+        the order itself. Duplicated ids yield the row once, at its first
+        requested position; ids with no active row are simply absent.
 
         Scopes come from one batched query rather than one per row: this feeds
         the recall render path, where a per-memory lookup would be an N+1 on
@@ -330,12 +415,16 @@ class MemoryRepository:
         if not memory_ids:
             return []
 
-        rows = await self._db.execute(_GET_BY_IDS, (memory_ids,))
+        requested = list(dict.fromkeys(_as_uuid(memory_id) for memory_id in memory_ids))
+
+        rows = await self._db.execute(_GET_BY_IDS, (requested,))
         if include_scopes and rows:
             by_memory = await ScopeRepository(self._db).get_for_memories([row["id"] for row in rows])
             for row in rows:
                 row["scopes"] = by_memory.get(row["id"], ScopeSet())
-        return rows
+
+        by_id = {row["id"]: row for row in rows}
+        return [by_id[memory_id] for memory_id in requested if memory_id in by_id]
 
     async def soft_delete(self, memory_id: str) -> list[dict]:
         return await self._db.execute(_SOFT_DELETE, (memory_id,))

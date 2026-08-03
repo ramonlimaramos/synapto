@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from psycopg import errors as pg_errors
 
 from synapto.db.migrations import ensure_hnsw_index, run_migrations
 from synapto.repositories.memories import MemoryRepository
@@ -426,3 +427,283 @@ class TestScopePayloadRoundTrip:
         await cache.invalidate_memory(memory_id)
 
         assert await cache.get_cached_memory(memory_id) is None
+
+
+class TestCombinedUpdateIsAtomic:
+    """Finding 1: memory fields and scopes must commit or roll back together."""
+
+    async def test_fields_and_scopes_commit_together(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "before", scopes=_scopes(("language", "python")))
+
+        row = await repo.update_with_scopes(memory_id, tenant=TENANT, content="after", scopes=_scopes(("repo", "a/b")))
+
+        assert row["content"] == "after"
+        stored = await repo.get_by_id(memory_id)
+        assert stored["content"] == "after"
+        assert stored["scopes"] == _scopes(("repo", "a/b"))
+
+    async def test_a_scope_failure_rolls_back_the_field_update(self, pg, provider, monkeypatch):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "original content", scopes=_scopes(("language", "python")))
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("injected scope failure")
+
+        monkeypatch.setattr(ScopeRepository, "replace_on", boom)
+
+        with pytest.raises(RuntimeError, match="injected"):
+            await repo.update_with_scopes(
+                memory_id, tenant=TENANT, content="must not persist", scopes=_scopes(("repo", "a/b"))
+            )
+
+        stored = await repo.get_by_id(memory_id)
+        assert stored["content"] == "original content"
+        assert stored["scopes"] == _scopes(("language", "python"))
+
+    async def test_omitted_scopes_preserve_while_fields_change(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "keep scopes", scopes=_scopes(("language", "python")))
+
+        await repo.update_with_scopes(memory_id, tenant=TENANT, summary="new summary")
+
+        stored = await repo.get_by_id(memory_id)
+        assert stored["summary"] == "new summary"
+        assert stored["scopes"] == _scopes(("language", "python"))
+
+    async def test_empty_scopes_clear_while_fields_change(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "clear scopes", scopes=_scopes(("language", "python")))
+
+        await repo.update_with_scopes(memory_id, tenant=TENANT, summary="cleared", scopes=ScopeSet())
+
+        stored = await repo.get_by_id(memory_id)
+        assert stored["summary"] == "cleared"
+        assert stored["scopes"] == ScopeSet()
+
+    async def test_another_tenant_cannot_update_fields_or_scopes(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "not yours", scopes=_scopes(("language", "python")))
+
+        with pytest.raises(UnknownMemoryError):
+            await repo.update_with_scopes(
+                memory_id, tenant=OTHER_TENANT, content="hijacked", scopes=_scopes(("repo", "a/b"))
+            )
+
+        stored = await repo.get_by_id(memory_id)
+        assert stored["content"] == "not yours"
+        assert stored["scopes"] == _scopes(("language", "python"))
+
+
+class TestAuthorizationLocksTheParent:
+    """Finding 2: authorization must not be a read-only check."""
+
+    async def test_authorization_query_takes_a_row_lock(self, pg, provider):
+        # a plain SELECT would let a concurrent delete or tenant move land
+        # between the check and the scope write
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "locked parent", scopes=_scopes(("language", "python")))
+
+        async with pg.acquire() as holder:
+            await repo._authorize(holder, memory_id, TENANT)
+
+            async with pg.acquire() as contender:
+                await contender.execute("SET LOCAL lock_timeout = '250ms';")
+                with pytest.raises(pg_errors.LockNotAvailable):
+                    await contender.execute("SELECT id FROM memories WHERE id = %s FOR UPDATE;", (memory_id,))
+                await contender.rollback()
+
+    async def test_a_delete_committed_before_authorization_wins(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "deleted first", scopes=_scopes(("language", "python")))
+        await repo.soft_delete(str(memory_id))
+
+        with pytest.raises(UnknownMemoryError):
+            await repo.replace_scopes(memory_id, _scopes(("repo", "a/b")), tenant=TENANT)
+
+    async def test_an_ownership_change_committed_before_authorization_wins(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "moved tenant", scopes=_scopes(("language", "python")))
+        await pg.execute("UPDATE memories SET tenant = %s WHERE id = %s;", (OTHER_TENANT, memory_id))
+
+        with pytest.raises(UnknownMemoryError):
+            await repo.replace_scopes(memory_id, _scopes(("repo", "a/b")), tenant=TENANT)
+
+        assert await ScopeRepository(pg).get_for_memory(memory_id) == _scopes(("language", "python"))
+
+    async def test_a_racing_delete_cannot_land_while_the_parent_is_locked(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "race target", scopes=_scopes(("language", "python")))
+
+        async with pg.acquire() as holder:
+            await repo._authorize(holder, memory_id, TENANT)
+
+            async with pg.acquire() as racer:
+                await racer.execute("SET LOCAL lock_timeout = '250ms';")
+                with pytest.raises(pg_errors.LockNotAvailable):
+                    await racer.execute("UPDATE memories SET deleted_at = now() WHERE id = %s;", (memory_id,))
+                await racer.rollback()
+
+
+class TestDomainAndScopesConflict:
+    """Finding 3: the two applicability axes cannot be supplied together."""
+
+    @pytest.mark.parametrize("scopes", [ScopeSet(), None])
+    async def test_create_accepts_either_axis_alone(self, pg, provider, scopes):
+        repo = MemoryRepository(pg)
+
+        memory_id = await _create(repo, provider, f"one axis {scopes}", domain="python", scopes=None)
+
+        assert (await repo.get_by_id(memory_id))["domain"] == "python"
+
+    async def test_create_rejects_both(self, pg, provider):
+        repo = MemoryRepository(pg)
+
+        with pytest.raises(InvalidScopeError, match="cannot be combined"):
+            await _create(repo, provider, "both axes", domain="python", scopes=_scopes(("language", "python")))
+
+    async def test_an_explicitly_empty_scope_set_still_conflicts(self, pg, provider):
+        # empty is a deliberate assertion about scopes, not an absence
+        repo = MemoryRepository(pg)
+
+        with pytest.raises(InvalidScopeError, match="cannot be combined"):
+            await _create(repo, provider, "empty but supplied", domain="python", scopes=ScopeSet())
+
+    @pytest.mark.parametrize("search", [hybrid_search, vector_search])
+    @pytest.mark.parametrize("scopes", [ScopeSet(), None])
+    async def test_search_rejects_both_before_any_io(self, pg, search, scopes):
+        class _Exploding:
+            dimension = 384
+
+            async def embed_one(self, text):
+                raise AssertionError("embedding must not run when the arguments conflict")
+
+        counter = _CountingClient(pg)
+        supplied = _scopes(("language", "python")) if scopes is None else scopes
+
+        with pytest.raises(InvalidScopeError, match="cannot be combined"):
+            await search(counter, _Exploding(), "anything", tenant=TENANT, domain="python", scopes=supplied)
+
+        assert counter.calls == 0
+
+    async def test_stored_legacy_domain_alongside_scopes_still_reads(self, pg, provider):
+        # the rejection is about request arguments, not storage: migration 005
+        # data coexists until PR-4 backfills it
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "legacy coexistence", domain="python")
+        await repo.replace_scopes(memory_id, _scopes(("language", "python")), tenant=TENANT)
+
+        row = await repo.get_by_id(memory_id)
+
+        assert row["domain"] == "python"
+        assert row["scopes"] == _scopes(("language", "python"))
+
+
+class TestVectorSearchCarriesScopes:
+    """Finding 4: vector results dropped their scopes entirely."""
+
+    async def test_results_carry_their_scopes(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "vector scoped note", scopes=_scopes(("language", "python")))
+
+        results = await vector_search(pg, provider, "vector scoped note", tenant=TENANT, limit=50)
+
+        by_id = {r.id: r for r in results}
+        assert by_id[memory_id].scopes == _scopes(("language", "python"))
+
+    async def test_unscoped_results_carry_an_empty_set(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "vector unscoped note")
+
+        results = await vector_search(pg, provider, "vector unscoped note", tenant=TENANT, limit=50)
+
+        assert {r.id: r for r in results}[memory_id].scopes == ScopeSet()
+
+    async def test_hydration_is_one_query_not_one_per_result(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        repo = MemoryRepository(pg)
+        for index in range(4):
+            await _create(repo, provider, f"vector batch note {index}", scopes=_scopes(("language", f"lang{index}")))
+
+        counter = _CountingClient(pg)
+        await vector_search(counter, provider, "vector batch note", tenant=TENANT, limit=50)
+
+        # one search query plus exactly one scope hydration
+        assert counter.calls == 2
+
+    async def test_corrupt_aggregate_state_fails_closed(self, pg, provider):
+        await ensure_hnsw_index(pg, provider.dimension)
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "vector corrupt note")
+        for scope_type, scope_key in ((GLOBAL_TYPE, GLOBAL_KEY), ("language", "python")):
+            await pg.execute(
+                "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                (memory_id, scope_type, scope_key),
+            )
+
+        with pytest.raises(InvalidScopeError):
+            await vector_search(pg, provider, "vector corrupt note", tenant=TENANT, limit=50)
+
+
+class TestGetByIdsContract:
+    """Finding 5: typed ids and requested ordering."""
+
+    async def test_accepts_a_mix_of_uuids_and_strings(self, pg, provider):
+        repo = MemoryRepository(pg)
+        first = await _create(repo, provider, "mixed one")
+        second = await _create(repo, provider, "mixed two")
+
+        rows = await repo.get_by_ids([first, str(second)])
+
+        assert [row["id"] for row in rows] == [first, second]
+
+    async def test_returns_rows_in_requested_order(self, pg, provider):
+        repo = MemoryRepository(pg)
+        ids = [await _create(repo, provider, f"ordered {index}") for index in range(5)]
+        requested = list(reversed(ids))
+
+        rows = await repo.get_by_ids(requested)
+
+        assert [row["id"] for row in rows] == requested
+
+    async def test_duplicate_ids_yield_the_row_once(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "duplicated request")
+
+        rows = await repo.get_by_ids([memory_id, str(memory_id), memory_id])
+
+        assert [row["id"] for row in rows] == [memory_id]
+
+    async def test_missing_ids_are_absent_not_null(self, pg, provider):
+        repo = MemoryRepository(pg)
+        memory_id = await _create(repo, provider, "present")
+
+        rows = await repo.get_by_ids(["00000000-0000-0000-0000-000000000000", memory_id])
+
+        assert [row["id"] for row in rows] == [memory_id]
+
+    async def test_soft_deleted_ids_are_absent(self, pg, provider):
+        repo = MemoryRepository(pg)
+        kept = await _create(repo, provider, "kept row")
+        removed = await _create(repo, provider, "removed row")
+        await repo.soft_delete(str(removed))
+
+        rows = await repo.get_by_ids([removed, kept])
+
+        assert [row["id"] for row in rows] == [kept]
+
+    async def test_ordering_holds_with_scopes_excluded(self, pg, provider):
+        repo = MemoryRepository(pg)
+        ids = [await _create(repo, provider, f"no scopes {index}") for index in range(3)]
+        requested = list(reversed(ids))
+
+        rows = await repo.get_by_ids(requested, include_scopes=False)
+
+        assert [row["id"] for row in rows] == requested
+        assert all("scopes" not in row for row in rows)
+
+    async def test_malformed_ids_are_rejected(self, pg):
+        with pytest.raises(ValueError):
+            await MemoryRepository(pg).get_by_ids(["not-a-uuid"])
