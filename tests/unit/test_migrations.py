@@ -219,3 +219,82 @@ class TestDomainColumnMigration:
         await run_migrations(pg)
         assert columns == []
         assert indexes == []
+
+
+class TestMemoryScopesMigration:
+    """Migration 006 — typed N:N scope membership."""
+
+    async def test_memory_scopes_table_has_the_agreed_columns(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute(
+            """
+            SELECT column_name, data_type, character_maximum_length, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'memory_scopes'
+            ORDER BY column_name;
+            """
+        )
+        columns = {r["column_name"]: r for r in rows}
+
+        assert set(columns) == {"memory_id", "scope_type", "scope_key", "source", "created_at"}
+        assert columns["scope_type"]["character_maximum_length"] == 20
+        assert columns["scope_key"]["character_maximum_length"] == 128
+        assert columns["source"]["character_maximum_length"] == 20
+        assert all(c["is_nullable"] == "NO" for c in columns.values())
+
+    async def test_primary_key_is_the_membership_triple(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute(
+            """
+            SELECT a.attname AS column_name
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            WHERE i.indrelid = 'memory_scopes'::regclass AND i.indisprimary;
+            """
+        )
+        assert {r["column_name"] for r in rows} == {"memory_id", "scope_type", "scope_key"}
+
+    async def test_lookup_index_exists(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_memory_scopes_lookup';")
+        assert len(rows) == 1, "idx_memory_scopes_lookup not found"
+        assert "scope_type, scope_key, memory_id" in rows[0]["indexdef"]
+
+    async def test_foreign_key_cascades_on_memory_delete(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute(
+            """
+            SELECT confdeltype
+            FROM pg_constraint
+            WHERE conrelid = 'memory_scopes'::regclass AND contype = 'f';
+            """
+        )
+        assert len(rows) == 1
+        assert rows[0]["confdeltype"] == "c", "expected ON DELETE CASCADE"
+
+    async def test_migrate_down_removes_the_table_and_index(self, pg):
+        await run_migrations(pg)
+
+        await migrate_down(pg, target_version=5)
+        tables = await pg.execute("SELECT to_regclass('public.memory_scopes') AS t;")
+        indexes = await pg.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memory_scopes_lookup';")
+
+        # restore schema before asserting so a failure doesn't poison other tests
+        await run_migrations(pg)
+        assert tables[0]["t"] is None
+        assert indexes == []
+
+    async def test_migrate_down_to_006_leaves_migration_005_intact(self, pg):
+        # 006 must never touch memories.domain: legacy data and the scalar
+        # column coexist with scopes until a later migration retires it
+        await run_migrations(pg)
+
+        await migrate_down(pg, target_version=5)
+        columns = await pg.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'memories' AND column_name = 'domain';"
+        )
+        indexes = await pg.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memories_tenant_domain';")
+
+        await run_migrations(pg)
+        assert len(columns) == 1, "migration 006 rollback removed the 005 domain column"
+        assert len(indexes) == 1, "migration 006 rollback removed the 005 domain index"
