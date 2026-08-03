@@ -12,8 +12,17 @@ install: ## install synapto
 dev: ## install with dev extras (tests, linting)
 	uv sync --extra dev
 
-test: ## run tests with pytest
+TEST_PG_DSN ?= postgresql://synapto:synapto@localhost:5433/synapto_test
+
+test: ## run tests that need no database (PostgreSQL tests are skipped)
 	uv run pytest tests/ -v
+
+test-all: ## run the full suite against the disposable synapto_test database
+	SYNAPTO_TEST_PG_DSN=$(TEST_PG_DSN) SYNAPTO_REQUIRE_TEST_PG=1 uv run pytest tests/ -v
+
+test-db: ## create the disposable synapto_test database used by test-all
+	docker compose exec -T postgres psql -U synapto -d postgres -c "CREATE DATABASE synapto_test;" || true
+	docker compose exec -T postgres psql -U synapto -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
 lint: ## run ruff linter
 	uv run ruff check src/ tests/

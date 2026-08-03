@@ -69,7 +69,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U synapto"
+          --health-cmd "pg_isready -U synapto -d synapto_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
@@ -106,5 +106,8 @@ jobs:
       - name: test
         env:
           SYNAPTO_TEST_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto_test
+          # fail instead of skipping: a green run with every PostgreSQL test
+          # skipped would be a false pass
+          SYNAPTO_REQUIRE_TEST_PG: "1"
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing

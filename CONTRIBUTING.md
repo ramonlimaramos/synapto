@@ -31,23 +31,47 @@ uv run synapto init
 
 ## Running Tests
 
+> **The PostgreSQL-backed tests are destructive.** They roll migrations down — dropping and recreating columns — and truncate tables. They refuse to run against any database whose name does not end in `_test`, and they never read `SYNAPTO_PG_DSN`. Never point them at a database whose contents you want to keep.
+
+### One-time setup
+
 ```bash
-# full suite
-uv run pytest tests/ -v
-
-# with coverage
-uv run pytest tests/ -v --cov=synapto --cov-report=term-missing
-
-# specific file
-uv run pytest tests/unit/test_hrr.py -v
+make docker-up                      # starts PostgreSQL (port 5433) and Redis
+make test-db                        # creates the disposable synapto_test database
 ```
 
-Tests require a running PostgreSQL (with pgvector) and Redis instance. Connection strings are read from environment variables:
+Or, against a PostgreSQL you already run:
 
-| Variable | Default |
-|----------|---------|
-| `SYNAPTO_PG_DSN` | `postgresql://localhost/synapto` |
-| `SYNAPTO_REDIS_URL` | `redis://localhost:6379/1` |
+```bash
+createdb synapto_test
+psql -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+```
+
+### The two commands
+
+```bash
+make test           # partial: skips every PostgreSQL test, needs no database
+make test-all       # full suite: requires SYNAPTO_TEST_PG_DSN
+```
+
+`make test` is safe anywhere and runs everything that does not need PostgreSQL — but it is **not** the full suite, and it will report success while the database tests are skipped. Use `make test-all` before opening a PR.
+
+Directly with pytest:
+
+```bash
+uv run pytest tests/ -v                                                  # partial, DB tests skipped
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test uv run pytest -v # full
+```
+
+### Environment variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SYNAPTO_TEST_PG_DSN` | **The only** DSN the tests will use. Must name a `*_test` database. | unset → PostgreSQL tests skip |
+| `SYNAPTO_REQUIRE_TEST_PG` | Set to `1` to turn that skip into a failure. CI sets it so a misconfigured job cannot pass with the database suite silently skipped. | unset |
+| `SYNAPTO_REDIS_URL` | Redis used by the cache fixture (scoped to the `synapto_test:` prefix). | `redis://localhost:6379/1` |
+
+`SYNAPTO_PG_DSN` is the **runtime** DSN for a real Synapto install. The test suite ignores it by design — reading it is what allowed a destructive run against real data.
 
 ## Linting
 

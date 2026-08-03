@@ -8,14 +8,12 @@ import os
 
 import pytest
 
-from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
 from synapto.embeddings.base import EmbeddingProvider
 from tests.db_guard import (
-    TEST_DSN_ENV,
     UnsafeTestDatabaseError,
-    resolve_test_dsn,
-    verify_disposable_database,
+    decide_test_database_action,
+    open_verified_client,
 )
 
 REDIS_URL = os.environ.get("SYNAPTO_REDIS_URL", "redis://localhost:6379/1")
@@ -85,33 +83,29 @@ async def pg():
 
     This suite is destructive — it rolls migrations down and truncates tables —
     so it never guesses a DSN and never touches the production one. See
-    ``tests/db_guard.py`` for the two fail-closed rules.
+    ``tests/db_guard.py`` for the fail-closed rules.
     """
-    dsn = resolve_test_dsn()
-    if dsn is None:
-        pytest.skip(
-            f"{TEST_DSN_ENV} is not set — export it pointing at a disposable "
-            "*_test database to run the PostgreSQL-backed tests "
-            "(see 'Running the tests' in README.md)"
-        )
-
-    client = PostgresClient(dsn, min_size=1, max_size=2)
-    await client.connect()
+    decision = decide_test_database_action()
+    if decision.action == "skip":
+        pytest.skip(decision.reason)
+    if decision.action == "fail":
+        pytest.fail(decision.reason, pytrace=False)
 
     unsafe_reason = None
     try:
-        await verify_disposable_database(client)
+        client = await open_verified_client(decision.dsn)
     except UnsafeTestDatabaseError as exc:
+        # open_verified_client already closed the pool; fail outside the except
+        # block so the report is the reason rather than an exception chain
         unsafe_reason = str(exc)
 
     if unsafe_reason is not None:
-        # close before failing so a rejected run does not also leak the pool, and
-        # fail outside the except block so the report is the reason, not a chain
-        await client.close()
         pytest.fail(unsafe_reason, pytrace=False)
 
-    yield client
-    await client.close()
+    try:
+        yield client
+    finally:
+        await client.close()
 
 
 @pytest.fixture
