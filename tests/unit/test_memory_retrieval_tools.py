@@ -39,12 +39,21 @@ async def _cleanup(pg):
     await pg.execute("DELETE FROM entities WHERE tenant = %s;", (TENANT,))
 
 
-async def _insert_memory(pg, provider, content: str, *, summary: str | None = None, subtype: str | None = None):
+async def _insert_memory(
+    pg,
+    provider,
+    content: str,
+    *,
+    summary: str | None = None,
+    subtype: str | None = None,
+    domain: str | None = None,
+):
     emb = await provider.embed_one(content)
     row = await pg.execute_one(
         """
-        INSERT INTO memories (content, summary, embedding, embedding_dim, type, subtype, tenant, depth_layer, metadata)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO memories
+            (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
         """,
         (
             content,
@@ -53,6 +62,7 @@ async def _insert_memory(pg, provider, content: str, *, summary: str | None = No
             provider.dimension,
             "reference",
             subtype,
+            domain,
             TENANT,
             "stable",
             Jsonb({"source": "test"}),
@@ -82,6 +92,73 @@ async def test_memory_repository_get_by_id_returns_full_record(pg, provider):
     assert row["metadata"] == {"source": "test"}
 
     await _cleanup(pg)
+
+
+async def test_memory_repository_get_by_id_returns_domain(pg, provider):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "domain-scoped fact", domain="python")
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+
+    assert row is not None
+    assert row["domain"] == "python"
+
+    await _cleanup(pg)
+
+
+async def test_memory_repository_create_persists_domain(pg, provider):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    emb = await provider.embed_one("created with domain")
+
+    memory_id = await MemoryRepository(pg).create(
+        content="created with domain",
+        embedding=emb,
+        embedding_dim=provider.dimension,
+        memory_type="project",
+        tenant=TENANT,
+        depth_layer="stable",
+        domain="jerry-workday",
+    )
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["domain"] == "jerry-workday"
+
+    await _cleanup(pg)
+
+
+def test_format_memory_renders_domain_after_subtype():
+    row = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "tenant": TENANT,
+        "type": "reference",
+        "subtype": "documentation",
+        "domain": "python",
+        "depth_layer": "stable",
+        "content": "body",
+    }
+
+    output = server._format_memory(row)
+    lines = output.splitlines()
+
+    assert "domain: python" in lines
+    assert lines.index("domain: python") == lines.index("subtype: documentation") + 1
+
+
+def test_format_memory_omits_domain_when_unset():
+    row = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "tenant": TENANT,
+        "type": "reference",
+        "depth_layer": "stable",
+        "content": "body",
+    }
+
+    output = server._format_memory(row)
+
+    assert "domain:" not in output
 
 
 async def test_memory_repository_update_merges_partial_fields(pg, provider):
@@ -330,3 +407,48 @@ async def test_recall_passes_subtype_filter_to_hybrid_search(monkeypatch):
     await server.recall("coding standards", subtype="code_style")
 
     assert captured["subtype"] == "code_style"
+
+
+def _search_result_stub(**overrides):
+    fields = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "content": "domain-tagged content",
+        "type": "project",
+        "subtype": None,
+        "tenant": TENANT,
+        "depth_layer": "stable",
+        "decay_score": 1.0,
+        "trust_score": 0.5,
+        "rrf_score": 0.1,
+        "created_at": datetime(2026, 5, 5, tzinfo=UTC),
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+async def test_recall_renders_domain_when_set(monkeypatch):
+    async def fake_hybrid_search(*args, **kwargs):
+        return [_search_result_stub(domain="python")]
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
+
+    output = await server.recall("anything")
+
+    assert "domain=python" in output
+
+
+async def test_recall_omits_domain_when_absent(monkeypatch):
+    async def fake_hybrid_search(*args, **kwargs):
+        return [_search_result_stub()]
+
+    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_provider", object())
+    monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
+
+    output = await server.recall("anything")
+
+    assert "domain=" not in output

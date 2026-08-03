@@ -60,6 +60,7 @@ SELECT
     m.summary,
     m.type,
     m.subtype,
+    m.domain,
     m.tenant,
     m.depth_layer,
     m.decay_score,
@@ -107,6 +108,7 @@ class SearchResult:
     access_count: int
     created_at: datetime
     accessed_at: datetime
+    domain: str | None = None
 
 
 def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
@@ -133,6 +135,7 @@ def _build_memory_filters(
     *,
     depth_layer: str | None = None,
     subtype: str | None = None,
+    domain: str | None = None,
     indent: str,
 ) -> tuple[str, dict[str, str]]:
     """Build shared optional memory filters.
@@ -148,6 +151,9 @@ def _build_memory_filters(
     if subtype:
         filters.append("AND subtype = %(subtype)s")
         params["subtype"] = subtype
+    if domain:
+        filters.append("AND domain = %(domain)s")
+        params["domain"] = domain
     return f"\n{indent}".join(filters), params
 
 
@@ -158,6 +164,7 @@ async def hybrid_search(
     tenant: str = "default",
     depth_layer: str | None = None,
     subtype: str | None = None,
+    domain: str | None = None,
     limit: int = 10,
     rrf_k: int = 60,
 ) -> list[SearchResult]:
@@ -175,6 +182,7 @@ async def hybrid_search(
     filter_sql, filter_params = _build_memory_filters(
         depth_layer=depth_layer,
         subtype=subtype,
+        domain=domain,
         indent="      ",
     )
     params.update(filter_params)
@@ -204,6 +212,7 @@ async def hybrid_search(
             summary=row["summary"],
             type=row["type"],
             subtype=row.get("subtype"),
+            domain=row.get("domain"),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],
@@ -220,7 +229,7 @@ async def hybrid_search(
 
 VECTOR_ONLY_TEMPLATE = """
 SELECT
-    id, content, summary, type, subtype, tenant, depth_layer, decay_score, trust_score, metadata,
+    id, content, summary, type, subtype, domain, tenant, depth_layer, decay_score, trust_score, metadata,
     access_count, created_at, accessed_at,
     1 - (embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS similarity
 FROM memories
@@ -239,6 +248,7 @@ async def vector_search(
     tenant: str = "default",
     depth_layer: str | None = None,
     subtype: str | None = None,
+    domain: str | None = None,
     limit: int = 10,
 ) -> list[SearchResult]:
     """Pure vector similarity search (no keyword component)."""
@@ -253,6 +263,7 @@ async def vector_search(
     filter_sql, filter_params = _build_memory_filters(
         depth_layer=depth_layer,
         subtype=subtype,
+        domain=domain,
         indent="  ",
     )
     params.update(filter_params)
@@ -268,6 +279,7 @@ async def vector_search(
             summary=row["summary"],
             type=row["type"],
             subtype=row.get("subtype"),
+            domain=row.get("domain"),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],

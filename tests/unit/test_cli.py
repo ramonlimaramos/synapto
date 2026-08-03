@@ -247,3 +247,151 @@ class TestServeCommand:
 
         assert result.exit_code == 0
         assert calls == [{"show_banner": False}]
+
+
+class _FakeDbClient:
+    """Minimal PostgresClient stand-in capturing SQL calls."""
+
+    def __init__(self, rows=None):
+        self.rows = rows or []
+        self.calls = []
+
+    async def connect(self):
+        pass
+
+    async def close(self):
+        pass
+
+    async def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        return self.rows
+
+
+class _FakeProvider:
+    dimension = 3
+
+    async def embed_one(self, text):
+        return [0.0, 0.0, 0.0]
+
+
+def _patch_cli_db(monkeypatch, fake_client):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(pg_dsn="postgresql://fake", default_tenant="cli_test", embedding_provider="fake")
+    monkeypatch.setattr("synapto.config.load_config", lambda: config)
+    monkeypatch.setattr("synapto.config.embedding_provider_kwargs", lambda cfg: {})
+    monkeypatch.setattr("synapto.db.postgres.PostgresClient", lambda dsn: fake_client)
+    monkeypatch.setattr("synapto.embeddings.registry.get_provider", lambda name, **kw: _FakeProvider())
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("synapto.db.migrations.ensure_hnsw_index", _noop)
+    monkeypatch.setattr("synapto.db.migrations.run_migrations", _noop)
+
+
+class TestDomainCliPlumbing:
+    def test_search_forwards_domain_filter(self, monkeypatch):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+        captured = {}
+
+        async def fake_hybrid_search(client, provider, query, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr("synapto.search.hybrid.hybrid_search", fake_hybrid_search)
+
+        result = CliRunner().invoke(main, ["search", "timeouts", "--domain", "python"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["domain"] == "python"
+
+    def test_export_includes_domain_key(self, monkeypatch):
+        fake_client = _FakeDbClient(
+            rows=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "content": "fact",
+                    "summary": None,
+                    "type": "project",
+                    "subtype": None,
+                    "domain": "python",
+                    "tenant": "cli_test",
+                    "depth_layer": "stable",
+                    "metadata": {},
+                    "created_at": "2026-07-09",
+                    "accessed_at": "2026-07-09",
+                }
+            ]
+        )
+        _patch_cli_db(monkeypatch, fake_client)
+
+        result = CliRunner().invoke(main, ["export"])
+
+        assert result.exit_code == 0, result.output
+        select_sql = fake_client.calls[0][0]
+        assert "domain" in select_sql
+        assert json.loads(result.output)[0]["domain"] == "python"
+
+    def test_import_persists_domain_from_json(self, monkeypatch, tmp_path):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        payload = [{"content": "fact", "domain": "python", "subtype": "workflow"}]
+        source = tmp_path / "memories.json"
+        source.write_text(json.dumps(payload))
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        assert result.exit_code == 0, result.output
+        insert_sql, insert_params = fake_client.calls[0]
+        assert "domain" in insert_sql
+        # positional asserts guard against column/parameter misalignment in the 10-column INSERT
+        assert insert_params[5] == "workflow"
+        assert insert_params[6] == "python"
+
+    def test_import_defaults_domain_to_none_for_legacy_payloads(self, monkeypatch, tmp_path):
+        fake_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, fake_client)
+
+        source = tmp_path / "legacy.json"
+        source.write_text(json.dumps([{"content": "pre-domain memory"}]))
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        assert result.exit_code == 0, result.output
+        _, insert_params = fake_client.calls[0]
+        assert insert_params[6] is None
+
+    def test_export_import_round_trip_preserves_domain(self, monkeypatch, tmp_path):
+        base_row = {
+            "content": "fact",
+            "summary": None,
+            "type": "project",
+            "subtype": None,
+            "tenant": "cli_test",
+            "depth_layer": "stable",
+            "metadata": {},
+            "created_at": "2026-07-09",
+            "accessed_at": "2026-07-09",
+        }
+        export_client = _FakeDbClient(
+            rows=[
+                {"id": "00000000-0000-0000-0000-000000000001", "domain": "python", **base_row},
+                {"id": "00000000-0000-0000-0000-000000000002", "domain": None, **base_row},
+            ]
+        )
+        _patch_cli_db(monkeypatch, export_client)
+        exported = CliRunner().invoke(main, ["export"])
+        assert exported.exit_code == 0, exported.output
+
+        source = tmp_path / "round_trip.json"
+        source.write_text(exported.output)
+        import_client = _FakeDbClient()
+        _patch_cli_db(monkeypatch, import_client)
+
+        result = CliRunner().invoke(main, ["import", str(source)])
+
+        assert result.exit_code == 0, result.output
+        assert [params[6] for _, params in import_client.calls] == ["python", None]

@@ -178,3 +178,44 @@ class TestRunMigrationsCompat:
         for table in ("memories", "entities", "relations", "memory_entities"):
             rows = await pg.execute("SELECT tablename FROM pg_tables WHERE tablename = %s;", (table,))
             assert len(rows) == 1, f"table {table} not found"
+
+
+class TestDomainColumnMigration:
+    """Migration 005 — nullable domain column plus partial tenant/domain index."""
+
+    async def test_memories_has_nullable_domain_column(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute(
+            """
+            SELECT data_type, character_maximum_length, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'memories' AND column_name = 'domain';
+            """
+        )
+        assert len(rows) == 1, "memories.domain column not found"
+        assert rows[0]["data_type"] == "character varying"
+        assert rows[0]["character_maximum_length"] == 50
+        assert rows[0]["is_nullable"] == "YES"
+
+    async def test_tenant_domain_partial_index_exists(self, pg):
+        await run_migrations(pg)
+        rows = await pg.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_memories_tenant_domain';")
+        assert len(rows) == 1, "idx_memories_tenant_domain not found"
+        indexdef = rows[0]["indexdef"]
+        assert "(tenant, domain)" in indexdef
+        assert "deleted_at IS NULL" in indexdef
+        assert "domain IS NOT NULL" in indexdef
+
+    async def test_migrate_down_removes_domain_column_and_index(self, pg):
+        await run_migrations(pg)
+
+        await migrate_down(pg, target_version=4)
+        columns = await pg.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'memories' AND column_name = 'domain';"
+        )
+        indexes = await pg.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memories_tenant_domain';")
+
+        # restore schema before asserting so a failure doesn't poison other tests
+        await run_migrations(pg)
+        assert columns == []
+        assert indexes == []
