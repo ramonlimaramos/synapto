@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install dev test lint format security audit serve init doctor docker-up docker-down clean
+.PHONY: help install dev test test-all test-db lint format security audit serve init doctor docker-up docker-down clean
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -12,8 +12,26 @@ install: ## install synapto
 dev: ## install with dev extras (tests, linting)
 	uv sync --extra dev
 
-test: ## run tests with pytest
-	uv run pytest tests/ -v
+# Ports match docker-compose.yml, which publishes PostgreSQL on 5433 and Redis
+# on 6380 to avoid colliding with a local install. Override per invocation:
+#   TEST_PG_DSN=... TEST_REDIS_URL=... make test-all
+TEST_PG_DSN ?= postgresql://synapto:synapto@localhost:5433/synapto_test
+TEST_REDIS_URL ?= redis://localhost:6380/1
+
+test: ## run tests without PostgreSQL (still needs Redis; see test-all for the full suite)
+	SYNAPTO_TEST_PG_DSN= SYNAPTO_REQUIRE_TEST_PG= SYNAPTO_REDIS_URL=$(TEST_REDIS_URL) uv run pytest tests/ -v
+
+test-all: ## run the full suite against the disposable synapto_test database
+	SYNAPTO_TEST_PG_DSN=$(TEST_PG_DSN) SYNAPTO_REQUIRE_TEST_PG=1 SYNAPTO_REDIS_URL=$(TEST_REDIS_URL) uv run pytest tests/ -v
+
+test-db: ## create the disposable synapto_test database used by test-all
+	@if [ -z "$$(docker compose exec -T postgres psql -U synapto -d postgres -tAc \
+		"SELECT 1 FROM pg_database WHERE datname = 'synapto_test'")" ]; then \
+		docker compose exec -T postgres psql -U synapto -d postgres \
+			-c "CREATE DATABASE synapto_test"; \
+	fi
+	docker compose exec -T postgres psql -U synapto -d synapto_test \
+		-c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
 lint: ## run ruff linter
 	uv run ruff check src/ tests/

@@ -8,11 +8,14 @@ import os
 
 import pytest
 
-from synapto.db.postgres import PostgresClient
 from synapto.db.redis_cache import RedisCache
 from synapto.embeddings.base import EmbeddingProvider
+from tests.db_guard import (
+    UnsafeTestDatabaseError,
+    decide_test_database_action,
+    open_verified_client,
+)
 
-DSN = os.environ.get("SYNAPTO_PG_DSN", "postgresql://localhost/synapto")
 REDIS_URL = os.environ.get("SYNAPTO_REDIS_URL", "redis://localhost:6379/1")
 TEST_EMBEDDING_DIM = 384
 
@@ -76,10 +79,33 @@ def provider():
 
 @pytest.fixture
 async def pg():
-    client = PostgresClient(DSN, min_size=1, max_size=2)
-    await client.connect()
-    yield client
-    await client.close()
+    """Connect to a disposable test database, or skip.
+
+    This suite is destructive — it rolls migrations down and truncates tables —
+    so it never guesses a DSN and never touches the production one. See
+    ``tests/db_guard.py`` for the fail-closed rules.
+    """
+    decision = decide_test_database_action()
+    if decision.action == "skip":
+        pytest.skip(decision.reason)
+    if decision.action == "fail":
+        pytest.fail(decision.reason, pytrace=False)
+
+    unsafe_reason = None
+    try:
+        client = await open_verified_client(decision.dsn)
+    except UnsafeTestDatabaseError as exc:
+        # open_verified_client already closed the pool; fail outside the except
+        # block so the report is the reason rather than an exception chain
+        unsafe_reason = str(exc)
+
+    if unsafe_reason is not None:
+        pytest.fail(unsafe_reason, pytrace=False)
+
+    try:
+        yield client
+    finally:
+        await client.close()
 
 
 @pytest.fixture
