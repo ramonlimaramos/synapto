@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
 
+### Security
+
+- **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
+
 ## [0.5.0] - 2026-07-01
 
 ### Added
