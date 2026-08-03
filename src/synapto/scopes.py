@@ -253,6 +253,27 @@ class ScopeSet:
 
         return cls(scopes=tuple(cls._parse_item(item) for item in items))
 
+    def to_payload(self) -> list[dict[str, str]]:
+        """Render as JSON-safe ordered mappings, for caches and transport.
+
+        Ordering is the value object's own, so a cached payload and a freshly
+        read set serialize identically — a cache hit and a miss cannot disagree.
+        """
+        return [{"type": ref.scope_type, "key": ref.scope_key} for ref in self.scopes]
+
+    @classmethod
+    def from_payload(cls, value: object) -> ScopeSet:
+        """Rebuild from :meth:`to_payload`, tolerating payloads written before scopes existed.
+
+        A missing or null value is an empty set rather than an error: cache
+        entries and exports predating this feature must keep deserializing.
+        Anything else present is validated normally — a malformed payload is a
+        bug, not a legacy artifact.
+        """
+        if value is None:
+            return cls()
+        return cls.parse(value)
+
     @staticmethod
     def _parse_item(item: object) -> ScopeRef:
         if isinstance(item, ScopeRef):
