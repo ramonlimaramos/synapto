@@ -44,8 +44,9 @@ dependencies = [
     # pinned to fix PYSEC-2026-175/PYSEC-2026-177/PYSEC-2026-178/PYSEC-2026-179,
     # pulled transitively by the MCP stack.
     "PyJWT>=2.13.0",
-    # pinned to fix GHSA-537c-gmf6-5ccf, pulled transitively by authlib/joserfc.
-    "cryptography>=48.0.1",
+    # pinned to fix GHSA-537c-gmf6-5ccf and CVE-2026-69247, pulled transitively
+    # by authlib/joserfc.
+    "cryptography>=50.0.0",
     # pinned to fix CVE-2026-48990, pulled transitively by authlib.
     "joserfc>=1.6.7",
     # pinned to fix GHSA-4xgf-cpjx-pc3j, pulled transitively by the MCP stack.
