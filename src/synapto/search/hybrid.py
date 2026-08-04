@@ -11,6 +11,14 @@ from uuid import UUID
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
 from synapto.repositories.memories import MemoryRepository
+from synapto.repositories.scopes import ScopeRepository
+from synapto.scopes import (
+    GLOBAL_KEY,
+    GLOBAL_TYPE,
+    InvalidScopeError,
+    ScopeSet,
+    reject_conflicting_scope_arguments,
+)
 
 logger = logging.getLogger("synapto.search.hybrid")
 
@@ -109,6 +117,7 @@ class SearchResult:
     created_at: datetime
     accessed_at: datetime
     domain: str | None = None
+    scopes: ScopeSet = ScopeSet()
 
 
 def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
@@ -131,20 +140,92 @@ def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float =
         return 0.0
 
 
+# Applicability, as one correlated predicate so no join fans out and RRF ranking
+# stays intact. Reading it inside-out:
+#   * the memory must have at least one scope, which is what excludes unscoped
+#     legacy rows whenever a filter is requested;
+#   * global:all short-circuits to a match;
+#   * otherwise every scope type the memory carries must be satisfied by at
+#     least one requested value of that type. Grouping by scope_type gives OR
+#     within a type for free, and NOT EXISTS over the unsatisfied groups gives
+#     AND across types. A requested type the memory does not carry imposes
+#     nothing, which is the "extra types in the query" rule.
+# The q side is COLLATE "C" to match the columns' byte-oriented collation, so
+# identity here is the same identity the primary key uses.
+_SCOPE_FILTER = """AND EXISTS (
+          SELECT 1 FROM memory_scopes any_scope
+          WHERE any_scope.memory_id = memories.id
+      )
+      AND (
+          EXISTS (
+              SELECT 1 FROM memory_scopes global_scope
+              WHERE global_scope.memory_id = memories.id
+                AND global_scope.scope_type = %(global_type)s
+                AND global_scope.scope_key = %(global_key)s
+          )
+          OR NOT EXISTS (
+              SELECT 1
+              FROM memory_scopes ms
+              LEFT JOIN unnest(%(scope_types)s::text[], %(scope_keys)s::text[])
+                     AS q(scope_type, scope_key)
+                ON q.scope_type COLLATE "C" = ms.scope_type
+               AND q.scope_key COLLATE "C" = ms.scope_key
+              WHERE ms.memory_id = memories.id
+              GROUP BY ms.scope_type
+              HAVING count(q.scope_key) = 0
+          )
+      )"""
+
+
+async def _hydrate_scopes(client: PostgresClient, memory_ids: list) -> dict:
+    """Attach scopes to a result page in one query.
+
+    Rendering a result without its scopes would leave callers to fetch them per
+    hit, which is the N+1 this exists to prevent. Memories with no scopes are
+    simply absent from the mapping.
+    """
+    if not memory_ids:
+        return {}
+    return await ScopeRepository(client).get_for_memories(memory_ids)
+
+
+def _build_scope_filter(scopes: ScopeSet | None) -> tuple[str, dict[str, Any]]:
+    """Render the applicability predicate and its parameters.
+
+    ``None`` means no scope filter, preserving legacy unfiltered behavior. An
+    explicitly empty set is rejected: it can only be a caller mistake, since it
+    would match nothing and silently return an empty result.
+    """
+    if scopes is None:
+        return "", {}
+    if not scopes:
+        raise InvalidScopeError("an empty scope filter matches nothing — omit the filter to search every scope")
+
+    return _SCOPE_FILTER, {
+        "scope_types": [ref.scope_type for ref in scopes],
+        "scope_keys": [ref.scope_key for ref in scopes],
+        "global_type": GLOBAL_TYPE,
+        "global_key": GLOBAL_KEY,
+    }
+
+
 def _build_memory_filters(
     *,
     depth_layer: str | None = None,
     subtype: str | None = None,
     domain: str | None = None,
+    scopes: ScopeSet | None = None,
     indent: str,
-) -> tuple[str, dict[str, str]]:
+) -> tuple[str, dict[str, Any]]:
     """Build shared optional memory filters.
 
     Complexity: O(1) time and space because the supported filter set is fixed.
     User values stay in params so SQL rendering remains injection-safe.
     """
-    filters = []
-    params = {}
+    reject_conflicting_scope_arguments(domain, scopes)
+
+    filters: list[str] = []
+    params: dict[str, Any] = {}
     if depth_layer:
         filters.append("AND depth_layer = %(depth_layer)s")
         params["depth_layer"] = depth_layer
@@ -154,6 +235,11 @@ def _build_memory_filters(
     if domain:
         filters.append("AND domain = %(domain)s")
         params["domain"] = domain
+
+    scope_sql, scope_params = _build_scope_filter(scopes)
+    if scope_sql:
+        filters.append(scope_sql)
+        params.update(scope_params)
     return f"\n{indent}".join(filters), params
 
 
@@ -164,11 +250,32 @@ async def hybrid_search(
     tenant: str = "default",
     depth_layer: str | None = None,
     subtype: str | None = None,
-    domain: str | None = None,
     limit: int = 10,
     rrf_k: int = 60,
+    *,
+    domain: str | None = None,
+    scopes: ScopeSet | None = None,
 ) -> list[SearchResult]:
-    """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR."""
+    """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR.
+
+    ``domain`` and ``scopes`` are keyword-only. ``domain`` had been inserted
+    ahead of ``limit``, which silently rebound positional callers' ``limit`` to
+    it; putting both after the established positional parameters restores the
+    original contract and keeps future filters from repeating the mistake.
+
+    ``scopes=None`` means no applicability filter, preserving legacy behavior.
+    """
+    # filters are built before embedding on purpose: an invalid scope filter
+    # must cost zero embedding calls and zero queries, not fail after paying for
+    # a model round trip
+    filter_sql, filter_params = _build_memory_filters(
+        depth_layer=depth_layer,
+        subtype=subtype,
+        domain=domain,
+        scopes=scopes,
+        indent="      ",
+    )
+
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
@@ -179,12 +286,6 @@ async def hybrid_search(
         "rrf_k": rrf_k,
         "limit": limit * 2,  # fetch extra for HRR reranking
     }
-    filter_sql, filter_params = _build_memory_filters(
-        depth_layer=depth_layer,
-        subtype=subtype,
-        domain=domain,
-        indent="      ",
-    )
     params.update(filter_params)
 
     sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
@@ -204,6 +305,7 @@ async def hybrid_search(
     if scored_rows:
         ids = [row["id"] for row, _ in scored_rows]
         await MemoryRepository(client).touch_accessed(ids)
+    scopes_by_memory = await _hydrate_scopes(client, [row["id"] for row, _ in scored_rows])
 
     return [
         SearchResult(
@@ -222,6 +324,7 @@ async def hybrid_search(
             access_count=row["access_count"],
             created_at=row["created_at"],
             accessed_at=row["accessed_at"],
+            scopes=scopes_by_memory.get(row["id"], ScopeSet()),
         )
         for row, final_score in scored_rows
     ]
@@ -248,10 +351,24 @@ async def vector_search(
     tenant: str = "default",
     depth_layer: str | None = None,
     subtype: str | None = None,
-    domain: str | None = None,
     limit: int = 10,
+    *,
+    domain: str | None = None,
+    scopes: ScopeSet | None = None,
 ) -> list[SearchResult]:
-    """Pure vector similarity search (no keyword component)."""
+    """Pure vector similarity search (no keyword component).
+
+    ``domain`` and ``scopes`` are keyword-only, for the reason documented on
+    :func:`hybrid_search`.
+    """
+    filter_sql, filter_params = _build_memory_filters(
+        depth_layer=depth_layer,
+        subtype=subtype,
+        domain=domain,
+        scopes=scopes,
+        indent="  ",
+    )
+
     embedding = await provider.embed_one(query)
     dim = provider.dimension
 
@@ -260,17 +377,12 @@ async def vector_search(
         "tenant": tenant,
         "limit": limit,
     }
-    filter_sql, filter_params = _build_memory_filters(
-        depth_layer=depth_layer,
-        subtype=subtype,
-        domain=domain,
-        indent="  ",
-    )
     params.update(filter_params)
 
     sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(sql, params)
+    scopes_by_memory = await _hydrate_scopes(client, [row["id"] for row in rows])
 
     return [
         SearchResult(
@@ -280,6 +392,7 @@ async def vector_search(
             type=row["type"],
             subtype=row.get("subtype"),
             domain=row.get("domain"),
+            scopes=scopes_by_memory.get(row["id"], ScopeSet()),
             tenant=row["tenant"],
             depth_layer=row["depth_layer"],
             decay_score=row["decay_score"],

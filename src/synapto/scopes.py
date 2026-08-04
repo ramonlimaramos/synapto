@@ -109,6 +109,24 @@ def _validate_key_charset(
     )
 
 
+def reject_conflicting_scope_arguments(domain: str | None, scopes: ScopeSet | None) -> None:
+    """Refuse a request that supplies both the legacy and the typed axis.
+
+    Composing them would silently AND two different applicability models, and
+    picking one would silently ignore what the caller asked for. An explicitly
+    empty ``ScopeSet`` still counts as supplied — it is a deliberate assertion
+    about scopes, not an absence.
+
+    This is about *request arguments*, not storage: legacy ``domain`` data
+    coexisting with scopes on a stored row stays valid until PR-4 backfills it.
+    """
+    if domain is not None and scopes is not None:
+        raise InvalidScopeError(
+            "domain and scopes cannot be combined — 'domain' is the legacy single-value axis "
+            "superseded by typed scopes; pass one or the other"
+        )
+
+
 @dataclass(frozen=True, order=True)
 class ScopeRef:
     """One validated ``(scope_type, scope_key)`` pair.
@@ -252,6 +270,27 @@ class ScopeSet:
             raise InvalidScopeError(f"scopes must be a list of scope objects, got {type(items).__name__}")
 
         return cls(scopes=tuple(cls._parse_item(item) for item in items))
+
+    def to_payload(self) -> list[dict[str, str]]:
+        """Render as JSON-safe ordered mappings, for caches and transport.
+
+        Ordering is the value object's own, so a cached payload and a freshly
+        read set serialize identically — a cache hit and a miss cannot disagree.
+        """
+        return [{"type": ref.scope_type, "key": ref.scope_key} for ref in self.scopes]
+
+    @classmethod
+    def from_payload(cls, value: object) -> ScopeSet:
+        """Rebuild from :meth:`to_payload`, tolerating payloads written before scopes existed.
+
+        A missing or null value is an empty set rather than an error: cache
+        entries and exports predating this feature must keep deserializing.
+        Anything else present is validated normally — a malformed payload is a
+        bug, not a legacy artifact.
+        """
+        if value is None:
+            return cls()
+        return cls.parse(value)
 
     @staticmethod
     def _parse_item(item: object) -> ScopeRef:

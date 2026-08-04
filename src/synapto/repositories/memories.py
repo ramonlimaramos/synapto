@@ -12,6 +12,8 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
+from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError, _as_uuid
+from synapto.scopes import ScopeSet, reject_conflicting_scope_arguments
 
 # ---------------------------------------------------------------------------
 # SQL constants
@@ -97,6 +99,18 @@ _UPDATE_MEMORY = """
         access_count,
         created_at,
         accessed_at;
+"""
+
+# FOR UPDATE, not a plain SELECT: a check that only reads leaves a window in
+# which another transaction can soft-delete the memory or move it to a different
+# tenant before the scope write lands. Locking here makes the qualification and
+# the mutation one atomic step — under READ COMMITTED the row is re-checked
+# after the lock is granted, so a concurrent delete or ownership change causes
+# this query to return nothing rather than authorizing a stale view.
+_AUTHORIZE_MEMORY = """
+    SELECT id FROM memories
+    WHERE id = %(memory_id)s AND tenant = %(tenant)s AND deleted_at IS NULL
+    FOR UPDATE;
 """
 
 _SOFT_DELETE = """
@@ -198,29 +212,158 @@ class MemoryRepository:
         tenant: str,
         depth_layer: str,
         subtype: str | None = None,
-        domain: str | None = None,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        domain: str | None = None,
+        scopes: ScopeSet | None = None,
     ) -> UUID:
-        row = await self._db.execute_one(
-            _INSERT,
-            {
-                "content": content,
-                "summary": summary,
-                "emb": embedding,
-                "dim": embedding_dim,
-                "type": memory_type,
-                "subtype": subtype,
-                "domain": domain,
-                "tenant": tenant,
-                "depth": depth_layer,
-                "meta": Jsonb(metadata or {}),
-            },
-        )
-        return row["id"]
+        """Create a memory, optionally with its initial scopes.
+
+        ``domain`` and ``scopes`` are keyword-only. ``domain`` had been inserted
+        between ``subtype`` and ``summary``, silently rebinding the summary of
+        any positional caller; moving both after the established positional
+        parameters restores that contract.
+
+        When ``scopes`` is given, the memory row and its memberships commit or
+        roll back together — a memory must never become visible without the
+        scopes that say where it applies. Omitting it, or passing an empty set,
+        creates an unscoped memory.
+        """
+        reject_conflicting_scope_arguments(domain, scopes)
+
+        params = {
+            "content": content,
+            "summary": summary,
+            "emb": embedding,
+            "dim": embedding_dim,
+            "type": memory_type,
+            "subtype": subtype,
+            "domain": domain,
+            "tenant": tenant,
+            "depth": depth_layer,
+            "meta": Jsonb(metadata or {}),
+        }
+
+        if not scopes:
+            row = await self._db.execute_one(_INSERT, params)
+            return row["id"]
+
+        async with self._db.acquire() as conn:
+            cursor = await conn.execute(_INSERT, params)
+            memory_id = (await cursor.fetchone())["id"]
+            await ScopeRepository(self._db).replace_on(conn, memory_id, scopes)
+        return memory_id
+
+    # -- scope membership ----------------------------------------------------
+
+    async def replace_scopes(self, memory_id: str | UUID, scopes: ScopeSet | None, *, tenant: str) -> None:
+        """Set a memory's scopes, authorizing the parent first.
+
+        ``ScopeRepository`` is an ID-only primitive with no notion of tenancy,
+        so reaching it through a raw memory id would let one tenant rescope
+        another's memory. Authorization and the mutation share one transaction,
+        so the parent cannot be soft-deleted or moved between the check and the
+        write.
+
+        ``None`` preserves the existing scopes and does nothing; an empty set
+        clears them; a non-empty set replaces them.
+        """
+        if scopes is None:
+            return
+
+        async with self._db.acquire() as conn:
+            await self._authorize(conn, memory_id, tenant)
+            await ScopeRepository(self._db).replace_on(conn, memory_id, scopes)
+
+    async def clear_scopes(self, memory_id: str | UUID, *, tenant: str) -> None:
+        """Remove every scope from a memory the tenant owns."""
+        async with self._db.acquire() as conn:
+            await self._authorize(conn, memory_id, tenant)
+            await ScopeRepository(self._db).clear_on(conn, memory_id)
+
+    @staticmethod
+    async def _authorize(conn, memory_id: str | UUID, tenant: str) -> None:
+        cursor = await conn.execute(_AUTHORIZE_MEMORY, {"memory_id": memory_id, "tenant": tenant})
+        if await cursor.fetchone() is None:
+            # deliberately indistinguishable from "does not exist": telling a
+            # caller that someone else's memory id is real leaks tenancy
+            raise UnknownMemoryError(f"memory {memory_id} does not exist for tenant {tenant!r} or has been deleted")
 
     async def update_hrr(self, memory_id: UUID, hrr_vector: bytes, hrr_dim: int) -> None:
         await self._db.execute(_UPDATE_HRR, (hrr_vector, hrr_dim, memory_id))
+
+    async def update_with_scopes(
+        self,
+        memory_id: str | UUID,
+        *,
+        tenant: str,
+        content: str | None = None,
+        embedding: list[float] | None = None,
+        embedding_dim: int | None = None,
+        summary: str | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+        scopes: ScopeSet | None = None,
+    ) -> dict[str, Any] | None:
+        """Update a memory's fields and its scopes in one transaction.
+
+        Without this, a caller updating both would commit the field change
+        through one connection and the scope change through another: a scope
+        failure would leave the content updated and the memberships stale, which
+        is exactly the partial commit the mutation contract forbids.
+
+        The parent is locked and authorized once, and every write rides that
+        same connection. Scope semantics match :meth:`replace_scopes` — ``None``
+        preserves, an empty set clears, a non-empty set replaces.
+
+        Work is O(s) for s scopes, capped at 20, in one transaction.
+        """
+        async with self._db.acquire() as conn:
+            await self._authorize(conn, memory_id, tenant)
+
+            cursor = await conn.execute(
+                _UPDATE_MEMORY,
+                self._update_params(
+                    memory_id,
+                    content=content,
+                    embedding=embedding,
+                    embedding_dim=embedding_dim,
+                    summary=summary,
+                    metadata_patch=metadata_patch,
+                ),
+            )
+            row = await cursor.fetchone()
+
+            if scopes is not None:
+                await ScopeRepository(self._db).replace_on(conn, memory_id, scopes)
+                if row is not None:
+                    row["scopes"] = scopes
+
+        return row
+
+    @staticmethod
+    def _update_params(
+        memory_id: str | UUID,
+        *,
+        content: str | None,
+        embedding: list[float] | None,
+        embedding_dim: int | None,
+        summary: str | None,
+        metadata_patch: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "id": memory_id,
+            "content_provided": content is not None,
+            "content": content,
+            "summary_provided": summary is not None,
+            "summary": summary,
+            "embedding_provided": embedding is not None,
+            "emb": embedding,
+            "dim_provided": embedding_dim is not None,
+            "dim": embedding_dim,
+            "meta_provided": metadata_patch is not None,
+            "meta": Jsonb(metadata_patch or {}),
+        }
 
     async def update(
         self,
@@ -234,28 +377,59 @@ class MemoryRepository:
     ) -> dict[str, Any] | None:
         return await self._db.execute_one(
             _UPDATE_MEMORY,
-            {
-                "id": memory_id,
-                "content_provided": content is not None,
-                "content": content,
-                "summary_provided": summary is not None,
-                "summary": summary,
-                "embedding_provided": embedding is not None,
-                "emb": embedding,
-                "dim_provided": embedding_dim is not None,
-                "dim": embedding_dim,
-                "meta_provided": metadata_patch is not None,
-                "meta": Jsonb(metadata_patch or {}),
-            },
+            self._update_params(
+                memory_id,
+                content=content,
+                embedding=embedding,
+                embedding_dim=embedding_dim,
+                summary=summary,
+                metadata_patch=metadata_patch,
+            ),
         )
 
-    async def get_by_id(self, memory_id: str | UUID) -> dict[str, Any] | None:
-        return await self._db.execute_one(_GET_BY_ID, (memory_id,))
+    async def get_by_id(self, memory_id: str | UUID, *, include_scopes: bool = True) -> dict[str, Any] | None:
+        """Fetch one active memory, carrying its ordered scopes by default."""
+        row = await self._db.execute_one(_GET_BY_ID, (memory_id,))
+        if row is None:
+            return None
+        if include_scopes:
+            row["scopes"] = await ScopeRepository(self._db).get_for_memory(row["id"])
+        return row
 
-    async def get_by_ids(self, memory_ids: list[str | UUID]) -> list[dict[str, Any]]:
+    async def get_by_ids(self, memory_ids: list[str | UUID], *, include_scopes: bool = True) -> list[dict[str, Any]]:
+        """Fetch active memories in the order requested, carrying ordered scopes.
+
+        Ids are normalized to :class:`UUID` first: the query binds a ``uuid[]``
+        and psycopg refuses a list mixing ``UUID`` and ``str``, which callers
+        produce naturally when ids arrive from both the database and JSON.
+
+        The result is the **ordered subsequence** of the unique active requested
+        ids: requested order is preserved, a duplicated id yields its row once
+        at the first requested position, and an id with no active row — missing
+        or soft-deleted — is absent rather than a placeholder.
+
+        Because entries can be missing, the result must never be zipped against
+        the requested list: ``[missing, existing]`` returns ``[existing]``, and
+        zipping would silently attribute that row to the missing id. Callers
+        needing correlation must map by ``row["id"]``.
+
+        Scopes come from one batched query rather than one per row: this feeds
+        the recall render path, where a per-memory lookup would be an N+1 on
+        every result page.
+        """
         if not memory_ids:
             return []
-        return await self._db.execute(_GET_BY_IDS, (memory_ids,))
+
+        requested = list(dict.fromkeys(_as_uuid(memory_id) for memory_id in memory_ids))
+
+        rows = await self._db.execute(_GET_BY_IDS, (requested,))
+        if include_scopes and rows:
+            by_memory = await ScopeRepository(self._db).get_for_memories([row["id"] for row in rows])
+            for row in rows:
+                row["scopes"] = by_memory.get(row["id"], ScopeSet())
+
+        by_id = {row["id"]: row for row in rows}
+        return [by_id[memory_id] for memory_id in requested if memory_id in by_id]
 
     async def soft_delete(self, memory_id: str) -> list[dict]:
         return await self._db.execute(_SOFT_DELETE, (memory_id,))
