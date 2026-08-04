@@ -4,13 +4,15 @@ Synapto uses versioned SQL files for schema management. Each migration has `up` 
 
 ## How It Works
 
-Migrations live in `migrations/` as numbered SQL files:
+Migrations are **bundled inside the package** as numbered SQL files, so they travel with every distribution:
 
 ```
-migrations/
+src/synapto/_migrations/
   001_initial.sql       # core schema (memories, entities, relations)
   002_add_hrr.sql       # HRR vectors, trust scoring, memory banks
 ```
+
+They are read through `importlib.resources`, which means discovery works identically in a source checkout, an editable install, an installed wheel, and a zipped distribution. It never consults the current working directory.
 
 Each file follows this format:
 
@@ -39,11 +41,13 @@ synapto migrate down --to 1     # rollback everything after version 1
 
 ## Writing a New Migration
 
-1. Create `migrations/003_your_change.sql`
+1. Create `src/synapto/_migrations/003_your_change.sql`
 2. Add `-- migrate:up` and `-- migrate:down` sections
 3. Run `synapto migrate up`
 
-The runner discovers files by glob, parses the sections, and applies them in version order. Checksums detect if a migration file was modified after being applied.
+The runner enumerates the packaged resources, parses the sections, and applies them in version order. Checksums detect if a migration file was modified after being applied.
+
+Discovery **fails closed**: a missing, unreadable, empty, or malformed bundle raises `MigrationDiscoveryError` before any database call, rather than warning and continuing with nothing to apply. Releases before 0.5.1 shipped no migrations at all and initialized an empty schema silently; `scripts/verify_wheel.py` now runs in CI and in the release workflow to make that unpublishable.
 
 ## Programmatic Usage
 

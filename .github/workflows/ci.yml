@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
 
 jobs:
   lint:
@@ -50,10 +50,36 @@ jobs:
         run: uv run bandit -r src/synapto/ -c pyproject.toml
 
       - name: pip-audit dependency scan
-        # CVE-2025-3000 is currently reported against torch, pulled transitively by
-        # sentence-transformers, with no fixed version available from pip-audit
-        # as of 2026-06-14. Keep the rest of the dependency audit active.
-        run: uv run pip-audit --ignore-vuln CVE-2025-3000
+        # Two deliberate, temporary exemptions on the v0.5 maintenance line:
+        #   CVE-2025-3000 (alias PYSEC-2025-194) against torch 2.11
+        #   PYSEC-2026-3447 against setuptools 81
+        # Clearing either requires torch 2.13 and setuptools>=83, which raise the
+        # Apple Silicon wheel floor to macOS 14. That is a platform decision for
+        # the v0.6 line, not something a patch release changes silently. These
+        # exemptions preserve the v0.5 platform contract and expire with that
+        # decision. Everything else stays audited.
+        run: uv run pip-audit --ignore-vuln CVE-2025-3000 --ignore-vuln PYSEC-2026-3447
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: set up python
+        run: uv python install 3.11
+
+      - name: build wheel
+        run: uv build --wheel -o dist-verify --python 3.11
+
+      # the artifact, not the source tree: the suite runs from a checkout where
+      # the old cwd fallback masked the missing migrations for five releases
+      - name: verify packaged migrations
+        run: uv run --python 3.11 python scripts/verify_wheel.py dist-verify/*.whl
 
   test:
     runs-on: ubuntu-latest
@@ -68,11 +94,11 @@ jobs:
         env:
           POSTGRES_USER: synapto
           POSTGRES_PASSWORD: synapto
-          POSTGRES_DB: synapto
+          POSTGRES_DB: synapto_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U synapto"
+          --health-cmd "pg_isready -U synapto -d synapto_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
@@ -104,10 +130,14 @@ jobs:
           UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
       - name: create pgvector extension
-        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+        run: PGPASSWORD=synapto psql -h localhost -U synapto -d synapto_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
       - name: test
         env:
-          SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto
+          # the v0.5 fixture defaults to postgresql://localhost/synapto, so the
+          # DSN is pointed explicitly at an ephemeral database whose name marks
+          # it disposable — CI must never run the destructive suite against a
+          # database that could be mistaken for a real one
+          SYNAPTO_PG_DSN: postgresql://synapto:synapto@localhost:5432/synapto_test
           SYNAPTO_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest tests/ -v --cov=synapto --cov-report=term-missing

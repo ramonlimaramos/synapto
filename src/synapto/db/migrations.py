@@ -1,11 +1,21 @@
 """Versioned SQL migration runner for Synapto.
 
-Uses the Iterator pattern to discover and apply numbered SQL files from the
-migrations/ directory. Each file contains ``-- migrate:up`` and ``-- migrate:down``
-sections. Applied migrations are tracked in a ``synapto_migrations`` table with
-SHA-256 checksums for tamper detection.
+Uses the Iterator pattern to discover and apply numbered SQL files bundled as
+package resources in ``synapto._migrations``. Each file contains
+``-- migrate:up`` and ``-- migrate:down`` sections. Applied migrations are
+tracked in a ``synapto_migrations`` table with SHA-256 checksums for tamper
+detection.
 
 Migration files must be named ``NNN_description.sql`` (e.g., ``001_initial.sql``).
+
+Discovery reads the resource through :class:`importlib.resources.abc.Traversable`
+rather than converting it to a filesystem path. The previous implementation
+walked ``resources.files("synapto")`` up two parents to a presumed source
+layout and fell back to ``Path.cwd() / "migrations"``. In an installed
+distribution neither exists, so discovery returned an empty list and logged a
+warning while the caller happily initialized nothing — and the cwd fallback
+could also read unrelated SQL from whatever directory the process ran in.
+Discovery now fails closed instead.
 """
 
 from __future__ import annotations
@@ -14,11 +24,26 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from importlib import resources
-from pathlib import Path
+from importlib.resources.abc import Traversable
+from typing import TYPE_CHECKING
 
-from synapto.db.postgres import PostgresClient
+if TYPE_CHECKING:  # keeps the module importable without third-party dependencies,
+    # which is what lets the packaged-artifact verifier check a --no-deps install
+    from synapto.db.postgres import PostgresClient
 
 logger = logging.getLogger("synapto.db.migrations")
+
+MIGRATIONS_PACKAGE = "synapto._migrations"
+
+
+class MigrationDiscoveryError(RuntimeError):
+    """Raised when the migration bundle is missing, unreadable, or malformed.
+
+    Always raised rather than warned: a caller that proceeds without migrations
+    silently reports success against an uninitialized schema, which is the
+    failure mode this replaces.
+    """
+
 
 TRACKING_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS synapto_migrations (
@@ -45,20 +70,35 @@ def _compute_checksum(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def _parse_migration_file(path: Path) -> Migration:
-    """Parse a migration SQL file into up/down sections.
+def _parse_migration_file(resource: Traversable) -> Migration:
+    """Parse a migration SQL resource into up/down sections.
+
+    Takes a Traversable rather than a Path so the same code reads a source
+    checkout, an installed wheel, and a zip-backed distribution.
 
     Expected format:
         -- migrate:up
         <SQL statements>
         -- migrate:down
         <SQL statements>
+
+    Raises:
+        MigrationDiscoveryError: the resource cannot be decoded, or its name
+            does not start with a numeric version.
     """
-    content = path.read_text()
-    filename = path.name
+    filename = resource.name
+    try:
+        content = resource.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MigrationDiscoveryError(f"cannot read migration {filename!r}: {exc}") from exc
 
     version_str = filename.split("_", 1)[0]
-    version = int(version_str)
+    try:
+        version = int(version_str)
+    except ValueError as exc:
+        raise MigrationDiscoveryError(
+            f"migration {filename!r} is malformed: expected a NNN_description.sql name"
+        ) from exc
 
     up_sql = ""
     down_sql = ""
@@ -87,28 +127,38 @@ def _parse_migration_file(path: Path) -> Migration:
     )
 
 
-def discover_migrations(migrations_dir: Path | None = None) -> list[Migration]:
-    """Discover and parse all migration SQL files, sorted by version."""
-    if migrations_dir is None:
-        # default: project root / migrations
-        pkg = resources.files("synapto")
-        migrations_dir = Path(str(pkg)).parent.parent / "migrations"
-        if not migrations_dir.is_dir():
-            # fallback: relative to cwd
-            migrations_dir = Path.cwd() / "migrations"
+def discover_migrations(migrations_dir: Traversable | None = None) -> list[Migration]:
+    """Discover and parse the bundled migrations, sorted by version.
 
-    if not migrations_dir.is_dir():
-        logger.warning("migrations directory not found: %s", migrations_dir)
-        return []
+    Reads the ``synapto._migrations`` package resource by default. An explicit
+    source is still accepted for tests and operators; ``pathlib.Path`` satisfies
+    the Traversable surface, so existing callers keep working.
 
-    files = sorted(migrations_dir.glob("*.sql"))
-    migrations = []
-    for f in files:
+    Raises:
+        MigrationDiscoveryError: the source is missing, is not a directory,
+            contains no SQL migrations, or contains one that cannot be parsed.
+            Never returns an empty list — a caller cannot tell "no migrations"
+            from "could not find them", so this refuses to make that ambiguous.
+    """
+    source = migrations_dir
+    if source is None:
         try:
-            m = _parse_migration_file(f)
-            migrations.append(m)
-        except (ValueError, IndexError) as e:
-            logger.warning("skipping invalid migration file %s: %s", f.name, e)
+            source = resources.files(MIGRATIONS_PACKAGE)
+        except (ModuleNotFoundError, TypeError) as exc:
+            raise MigrationDiscoveryError(
+                f"migration bundle {MIGRATIONS_PACKAGE!r} is not importable — "
+                "the distribution is missing its packaged migrations"
+            ) from exc
+
+    try:
+        entries = sorted(source.iterdir(), key=lambda entry: entry.name)
+    except (OSError, NotADirectoryError) as exc:
+        raise MigrationDiscoveryError(f"migration source {source!r} is not a readable directory: {exc}") from exc
+
+    migrations = [_parse_migration_file(entry) for entry in entries if entry.name.endswith(".sql") and entry.is_file()]
+
+    if not migrations:
+        raise MigrationDiscoveryError(f"migration source {source!r} contains no .sql migrations")
 
     return sorted(migrations, key=lambda m: m.version)
 
@@ -120,24 +170,25 @@ async def _ensure_tracking_table(client: PostgresClient) -> None:
 async def get_applied_migrations(client: PostgresClient) -> dict[str, str]:
     """Return a mapping of filename → checksum for all applied migrations."""
     await _ensure_tracking_table(client)
-    rows = await client.execute(
-        "SELECT filename, checksum FROM synapto_migrations ORDER BY filename;"
-    )
+    rows = await client.execute("SELECT filename, checksum FROM synapto_migrations ORDER BY filename;")
     return {row["filename"]: row["checksum"] for row in rows}
 
 
 async def migrate_up(
     client: PostgresClient,
-    migrations_dir: Path | None = None,
+    migrations_dir: Traversable | None = None,
     target_version: int | None = None,
 ) -> list[str]:
     """Apply all pending migrations (or up to target_version).
 
     Returns list of applied migration filenames.
     """
+    # discovery first: a missing or malformed bundle must fail before the
+    # database is touched, so a broken install never half-initializes a schema
+    all_migrations = discover_migrations(migrations_dir)
+
     await _ensure_tracking_table(client)
     applied = await get_applied_migrations(client)
-    all_migrations = discover_migrations(migrations_dir)
 
     applied_files = []
     for m in all_migrations:
@@ -163,15 +214,18 @@ async def migrate_up(
 async def migrate_down(
     client: PostgresClient,
     target_version: int = 0,
-    migrations_dir: Path | None = None,
+    migrations_dir: Traversable | None = None,
 ) -> list[str]:
     """Rollback migrations down to (but not including) target_version.
 
     Returns list of rolled-back migration filenames.
     """
+    # discovery first: a missing or malformed bundle must fail before the
+    # database is touched, so a broken install never half-initializes a schema
+    all_migrations = discover_migrations(migrations_dir)
+
     await _ensure_tracking_table(client)
     applied = await get_applied_migrations(client)
-    all_migrations = discover_migrations(migrations_dir)
 
     # rollback in reverse order
     rolled_back = []
@@ -196,23 +250,28 @@ async def migrate_down(
 
 async def get_migration_status(
     client: PostgresClient,
-    migrations_dir: Path | None = None,
+    migrations_dir: Traversable | None = None,
 ) -> list[dict]:
     """Return status of all migrations: applied or pending."""
+    # discovery first: a missing or malformed bundle must fail before the
+    # database is touched, so a broken install never half-initializes a schema
+    all_migrations = discover_migrations(migrations_dir)
+
     await _ensure_tracking_table(client)
     applied = await get_applied_migrations(client)
-    all_migrations = discover_migrations(migrations_dir)
 
     status = []
     for m in all_migrations:
         is_applied = m.filename in applied
         checksum_match = applied.get(m.filename) == m.checksum if is_applied else None
-        status.append({
-            "version": m.version,
-            "filename": m.filename,
-            "status": "applied" if is_applied else "pending",
-            "checksum_ok": checksum_match,
-        })
+        status.append(
+            {
+                "version": m.version,
+                "filename": m.filename,
+                "status": "applied" if is_applied else "pending",
+                "checksum_ok": checksum_match,
+            }
+        )
     return status
 
 
@@ -220,16 +279,14 @@ async def get_migration_status(
 # Backward compatibility: bridge from old synapto_schema table
 # ---------------------------------------------------------------------------
 
+
 async def _migrate_from_legacy_schema(client: PostgresClient) -> bool:
     """Detect old synapto_schema table and mark migration 001 as applied.
 
     Returns True if legacy migration was detected and bridged.
     """
     try:
-        row = await client.execute_one(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = 'synapto_schema';"
-        )
+        row = await client.execute_one("SELECT 1 FROM information_schema.tables WHERE table_name = 'synapto_schema';")
         if not row:
             return False
 
@@ -252,8 +309,13 @@ async def _migrate_from_legacy_schema(client: PostgresClient) -> bool:
 # Convenience wrappers (used by init and server startup)
 # ---------------------------------------------------------------------------
 
-async def run_migrations(client: PostgresClient, migrations_dir: Path | None = None) -> None:
+
+async def run_migrations(client: PostgresClient, migrations_dir: Traversable | None = None) -> None:
     """Apply all pending migrations. Handles legacy schema detection."""
+    # validated before the legacy bridge, which writes to the database: the
+    # bridge swallows exceptions, so discovery cannot be left to fail inside it
+    discover_migrations(migrations_dir)
+
     await _migrate_from_legacy_schema(client)
     applied = await migrate_up(client, migrations_dir)
     if applied:

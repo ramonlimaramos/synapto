@@ -98,6 +98,12 @@ jobs:
       - name: build package
         run: uv run python -m build
 
+      # Runs before the version commit, the tag, PyPI, and the GitHub release, so
+      # a wheel missing its migrations leaves no externally visible state behind.
+      # Every published artifact from 0.1.0 to 0.5.0 would have failed this.
+      - name: verify packaged migrations
+        run: uv run python scripts/verify_wheel.py dist/*.whl
+
       - name: commit version bump
         if: inputs.bump_type != 'current'
         run: |
