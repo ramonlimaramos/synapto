@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Security
 
+- **cryptography constrained to >=50.0.0** to fix CVE-2026-69247, which turned main CI red immediately after the PR-2 merge. Pulled transitively by authlib/joserfc.
 - **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
 
 ## [0.5.0] - 2026-07-01
