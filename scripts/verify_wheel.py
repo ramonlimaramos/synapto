@@ -19,8 +19,10 @@ Usage:
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -90,9 +92,19 @@ def _check_archive(wheel: Path) -> None:
         # have verified a UTF-8 round-trip rather than what the wheel actually
         # contains, and invalid bytes escaped as an uncaught UnicodeDecodeError.
         for member in bundled:
+            info = archive.getinfo(member)
+            # A ZIP entry can declare Unix mode bits. An entry flagged as a
+            # symlink may still carry the right bytes and pass both the hash and
+            # uv's probe, because uv materializes it as a regular file — another
+            # installer may follow the link instead. Entries without mode
+            # metadata (the normal case) are left alone.
+            file_type = (info.external_attr >> 16) & 0o170000
+            if file_type and file_type != stat.S_IFREG:
+                raise VerificationError(f"wheel member {member} is not a regular file (type {file_type:o})")
+
             try:
                 raw = archive.read(member)
-            except (KeyError, OSError, zipfile.BadZipFile) as exc:
+            except (KeyError, OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
                 raise VerificationError(f"cannot read {member} from the wheel: {exc}") from exc
 
             digest = hashlib.sha256(raw).hexdigest()[:16]
@@ -103,37 +115,71 @@ def _check_archive(wheel: Path) -> None:
     print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
 
 
+def _sdist_root(members: list) -> str:
+    """Return the single top-level directory every member must live under.
+
+    A source distribution is one rooted tree. Accepting several roots would let
+    a decoy sit beside the real package, so anything else is a rejection.
+    """
+    roots = {name.split("/", 1)[0] for name in members if name}
+    if len(roots) != 1:
+        raise VerificationError(f"sdist must have exactly one top-level directory, found {sorted(roots)}")
+    return roots.pop()
+
+
 def _check_sdist(sdist: Path) -> None:
-    """Assert the source distribution carries the same exact migrations.
+    """Assert the source distribution carries exactly the four canonical migrations.
 
     The release builds a wheel *and* an sdist and publishes both, but only the
-    wheel was gated — the sdist rode along labelled "verified". It is also the
-    artifact a downstream build can compile from, so an sdist missing its
-    migrations would reproduce the original defect through a different door.
+    wheel was gated — the sdist rode along labelled "verified". It is also what
+    a downstream build compiles from, so an sdist missing or duplicating its
+    migrations reproduces the original defect through another door.
+
+    Membership is decided by exact path equality, not by containment: a
+    substring test accepted the four files under ``not-package/``, accepted a
+    fifth duplicate beside the canonical four, and accepted ``..`` traversal.
     """
+    expected_paths = None
     try:
         with tarfile.open(sdist, "r:gz") as archive:
-            members = [m for m in archive.getmembers() if m.name.endswith(".sql")]
-            bundled = sorted(m.name for m in members if RESOURCE_PREFIX in m.name)
-            stray = sorted(m.name for m in members if RESOURCE_PREFIX not in m.name)
+            infos = archive.getmembers()
+            root = _sdist_root([info.name for info in infos])
+            expected_paths = [f"{root}/src/synapto/_migrations/{name}" for name in EXPECTED_MIGRATIONS]
 
-            if stray:
-                raise VerificationError(f"sdist contains SQL outside {RESOURCE_PREFIX}: {stray}")
+            # a list, not a set: a duplicate member must not collapse away
+            sql_members = [info for info in infos if info.name.endswith(".sql")]
+            found_paths = [info.name for info in sql_members]
+
+            for name in found_paths:
+                parts = Path(name).parts
+                if name.startswith("/") or ".." in parts or "." in parts:
+                    raise VerificationError(f"sdist member {name!r} has an unsafe path")
+
+            if sorted(found_paths) != sorted(expected_paths) or len(found_paths) != len(expected_paths):
+                raise VerificationError(
+                    f"sdist SQL members are {sorted(found_paths)}, expected {sorted(expected_paths)}"
+                )
 
             found = {}
-            for member in members:
-                handle = archive.extractfile(member)
+            for info in sql_members:
+                # regular files only: a symlink or hardlink could point anywhere,
+                # and extractfile returns None or raises for the other types
+                if not info.isfile():
+                    raise VerificationError(f"sdist member {info.name!r} is not a regular file")
+
+                handle = archive.extractfile(info)
                 if handle is None:
-                    raise VerificationError(f"cannot read {member.name} from the sdist")
-                name = member.name.rsplit("/", 1)[-1]
-                found[name] = hashlib.sha256(handle.read()).hexdigest()[:16]
-    except (OSError, tarfile.TarError) as exc:
-        raise VerificationError(f"cannot open {sdist.name} as a source distribution: {exc}") from exc
+                    raise VerificationError(f"cannot read {info.name} from the sdist")
+                found[info.name.rsplit("/", 1)[-1]] = hashlib.sha256(handle.read()).hexdigest()[:16]
+    except VerificationError:
+        raise
+    except (OSError, KeyError, EOFError, gzip.BadGzipFile, tarfile.TarError) as exc:
+        raise VerificationError(f"cannot read {sdist.name} as a source distribution: {exc}") from exc
 
     if found != EXPECTED_MIGRATIONS:
         raise VerificationError(f"sdist migrations are {found}, expected {EXPECTED_MIGRATIONS}")
 
-    print(f"sdist: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
+    print(f"sdist: {len(found)} migrations bundled at {root}/src/synapto/_migrations/, checksums match")
 
 
 def _create_environment(env_dir: Path) -> Path:

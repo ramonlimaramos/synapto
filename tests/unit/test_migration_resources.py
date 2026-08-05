@@ -853,7 +853,7 @@ class TestSdistIsGated:
             verifier._check_sdist(self._sdist(tmp_path, mutate="001_initial.sql"))
 
     def test_a_root_migrations_copy_is_rejected(self, verifier, tmp_path):
-        with pytest.raises(verifier.VerificationError, match="outside"):
+        with pytest.raises(verifier.VerificationError, match="expected"):
             verifier._check_sdist(self._sdist(tmp_path, root_copy=True))
 
     def test_a_missing_migration_is_rejected(self, verifier, tmp_path):
@@ -866,5 +866,167 @@ class TestSdistIsGated:
         broken = tmp_path / "synapto-0.5.1.tar.gz"
         broken.write_text("not a tarball")
 
-        with pytest.raises(verifier.VerificationError, match="cannot open"):
+        with pytest.raises(verifier.VerificationError, match="cannot read"):
             verifier._check_sdist(broken)
+
+
+def _sdist_with(tmp_path, members):
+    """Build a source distribution from explicit (path, bytes, kind) members."""
+    import io
+    import tarfile
+
+    path = tmp_path / "synapto-0.5.1.tar.gz"
+    path.unlink(missing_ok=True)
+    with tarfile.open(path, "w:gz") as tar:
+        for name, content, kind in members:
+            info = tarfile.TarInfo(name)
+            if kind == "symlink":
+                info.type = tarfile.SYMTYPE
+                info.linkname = "../nowhere.sql"
+                info.size = 0
+                tar.addfile(info)
+            elif kind == "hardlink":
+                info.type = tarfile.LNKTYPE
+                info.linkname = "synapto-0.5.1/src/synapto/_migrations/001_initial.sql"
+                info.size = 0
+                tar.addfile(info)
+            else:
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+    return path
+
+
+def _canonical_members():
+    from importlib import resources
+
+    bundle = resources.files(MIGRATIONS_PACKAGE)
+    return [
+        (f"synapto-0.5.1/src/synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode(), "file")
+        for name in EXPECTED
+    ]
+
+
+class TestSdistGateIsExact:
+    """Membership must be exact path equality, not containment.
+
+    A substring test accepted all four files under a decoy directory, accepted a
+    fifth duplicate beside the canonical four, and accepted `..` traversal.
+    """
+
+    @pytest.fixture
+    def verifier(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+        spec = importlib.util.spec_from_file_location("verify_wheel_exact", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_canonical_sdist_passes(self, verifier, tmp_path):
+        verifier._check_sdist(_sdist_with(tmp_path, _canonical_members()))  # must not raise
+
+    def test_migrations_in_a_decoy_directory_are_rejected(self, verifier, tmp_path):
+        members = [(name.replace("/src/", "/not-package/"), body, kind) for name, body, kind in _canonical_members()]
+
+        with pytest.raises(verifier.VerificationError, match="expected"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_duplicate_canonical_member_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members()
+        members.append(("synapto-0.5.1/other/synapto/_migrations/001_initial.sql", members[0][1], "file"))
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_decoy_with_conflicting_bytes_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members()
+        members.append(("synapto-0.5.1/src/synapto/_migrations/001_initial.sql", b"different bytes", "file"))
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_path_with_parent_traversal_is_rejected(self, verifier, tmp_path):
+        members = [(name.replace("/src/", "/../evil/"), body, kind) for name, body, kind in _canonical_members()]
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    @pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+    def test_a_non_regular_member_is_rejected(self, verifier, tmp_path, kind):
+        members = _canonical_members()[:3]
+        members.append(("synapto-0.5.1/src/synapto/_migrations/004_add_memory_subtype.sql", b"", kind))
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_v0_6_migration_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members()
+        members.append(
+            ("synapto-0.5.1/src/synapto/_migrations/005_add_memory_domain.sql", MIGRATION_BODY.encode(), "file")
+        )
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_several_top_level_roots_are_rejected(self, verifier, tmp_path):
+        members = _canonical_members()
+        members.append(("other-root/README.md", b"decoy", "file"))
+
+        with pytest.raises(verifier.VerificationError, match="top-level"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_broken_sdist_returns_one_through_main_without_a_traceback(self, verifier, tmp_path, capsys):
+        # a dangling link used to escape main as a raw KeyError
+        wheel = _wheel_with_real_migrations(tmp_path)
+        members = _canonical_members()[:3]
+        members.append(("synapto-0.5.1/src/synapto/_migrations/004_add_memory_subtype.sql", b"", "symlink"))
+        sdist = _sdist_with(tmp_path, members)
+
+        assert verifier.main(["verify_wheel.py", str(wheel), str(sdist)]) == 1
+
+        captured = capsys.readouterr()
+        assert "FAILED" in captured.err
+        assert "Traceback" not in captured.err
+
+
+class TestWheelMemberMetadata:
+    @pytest.fixture
+    def verifier(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+        spec = importlib.util.spec_from_file_location("verify_wheel_meta", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _wheel(self, tmp_path, *, link_member=None):
+        import stat as stat_module
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                info = zipfile.ZipInfo(f"synapto/_migrations/{name}")
+                mode = stat_module.S_IFLNK | 0o777 if name == link_member else stat_module.S_IFREG | 0o644
+                info.external_attr = mode << 16
+                zf.writestr(info, (bundle / name).read_text(encoding="utf-8").encode())
+        return wheel
+
+    def test_regular_members_pass(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path))  # must not raise
+
+    def test_a_member_flagged_as_a_symlink_is_rejected(self, verifier, tmp_path):
+        # it can carry the right bytes and satisfy both the hash and uv's probe,
+        # because uv materializes it as a file — another installer may not
+        with pytest.raises(verifier.VerificationError, match="not a regular file"):
+            verifier._check_archive(self._wheel(tmp_path, link_member="001_initial.sql"))
+
+    def test_members_without_unix_metadata_are_accepted(self, verifier, tmp_path):
+        # the common case: many writers leave external_attr at 0
+        wheel = _wheel_with_real_migrations(tmp_path)
+
+        verifier._check_archive(wheel)  # must not raise
