@@ -653,3 +653,218 @@ class TestResourceIsReadOnceBeforeAnyDatabaseCall:
         await run_migrations(client, source)
 
         assert (source.iterdir_calls, source.read_calls) == client.snapshot
+
+
+class _LegacyDatabase:
+    """A stateful fake standing in for a database created before the runner existed.
+
+    Models only what the bridge and the runner touch: the presence of the old
+    ``synapto_schema`` table, the tracking table's contents, and which up-SQL
+    statements were executed. Everything is counted so the test can assert
+    "exactly once" rather than "at least once".
+    """
+
+    LEGACY_PROBE = "information_schema.tables"
+
+    def __init__(self, *, legacy: bool):
+        self.legacy = legacy
+        self.tracking: dict[str, str] = {}
+        self.executed_up_sql: list[str] = []
+        self.tracking_inserts: list[tuple[str, str]] = []
+
+    async def execute_one(self, query, params=None):
+        if self.LEGACY_PROBE in query:
+            return {"exists": 1} if self.legacy else None
+        return None
+
+    async def execute(self, query, params=None):
+        if "CREATE TABLE IF NOT EXISTS synapto_migrations" in query:
+            return []
+        if "SELECT filename, checksum FROM synapto_migrations" in query:
+            return [{"filename": name, "checksum": checksum} for name, checksum in self.tracking.items()]
+        if "INSERT INTO synapto_migrations" in query:
+            self._record(params)
+            return []
+        return []
+
+    def _record(self, params):
+        filename, checksum = params
+        self.tracking_inserts.append((filename, checksum))
+        self.tracking.setdefault(filename, checksum)
+
+    def acquire(self):
+        return _LegacyConnection(self)
+
+
+class _LegacyConnection:
+    def __init__(self, db):
+        self._db = db
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, query, params=None):
+        if "INSERT INTO synapto_migrations" in query:
+            self._db._record(params)
+        else:
+            self._db.executed_up_sql.append(query)
+        return None
+
+
+class TestLegacySchemaBridge:
+    """The compatibility path for databases predating the migration runner.
+
+    Existing coverage only exercised a clean database, so the bridge itself —
+    the branch that decides an old schema already contains migration 001 — was
+    never asserted.
+    """
+
+    @pytest.fixture
+    def bundle(self, tmp_path):
+        # 001 must carry the real name the bridge marks, or the suppression the
+        # bridge exists to perform would not be exercised at all
+        names = {1: "001_initial.sql", 2: "002_step.sql", 3: "003_step.sql"}
+        for index, name in names.items():
+            (tmp_path / name).write_text(f"-- migrate:up\nSELECT {index};\n-- migrate:down\nSELECT -{index};\n")
+        return tmp_path
+
+    async def test_a_legacy_database_marks_001_once_without_running_it(self, bundle):
+        db = _LegacyDatabase(legacy=True)
+
+        await run_migrations(db, bundle)
+
+        # 001 is recorded as already satisfied by the old schema...
+        assert db.tracking["001_initial.sql"] == "legacy"
+        assert [f for f, _ in db.tracking_inserts].count("001_initial.sql") == 1
+        # ...and its up SQL is never executed, which is the whole point
+        assert "SELECT 1;" not in db.executed_up_sql
+
+    async def test_the_remaining_migrations_are_applied_exactly_once(self, bundle):
+        db = _LegacyDatabase(legacy=True)
+
+        await run_migrations(db, bundle)
+
+        # 001 is skipped because the bridge already recorded it
+        assert db.executed_up_sql == ["SELECT 2;", "SELECT 3;"]
+        assert sorted(db.tracking) == ["001_initial.sql", "002_step.sql", "003_step.sql"]
+
+    async def test_a_second_run_applies_and_records_nothing(self, bundle):
+        db = _LegacyDatabase(legacy=True)
+        await run_migrations(db, bundle)
+        applied_first = list(db.executed_up_sql)
+        inserts_first = list(db.tracking_inserts)
+
+        await run_migrations(db, bundle)
+
+        assert db.executed_up_sql == applied_first
+        assert db.tracking_inserts == inserts_first
+
+    async def test_a_clean_database_does_not_get_the_legacy_marker(self, bundle):
+        db = _LegacyDatabase(legacy=False)
+
+        await run_migrations(db, bundle)
+
+        # no legacy marker, so 001 runs like any other migration
+        assert db.tracking["001_initial.sql"] != "legacy"
+        assert db.executed_up_sql == ["SELECT 1;", "SELECT 2;", "SELECT 3;"]
+
+
+class TestVerifierHandlesBrokenArchives:
+    """Corruption must be an actionable failure, never a traceback."""
+
+    @pytest.fixture
+    def verifier(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+        spec = importlib.util.spec_from_file_location("verify_wheel_broken", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_non_zip_file_is_reported_without_a_traceback(self, verifier, tmp_path):
+        not_a_wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        not_a_wheel.write_text("[project]\nname = 'not a wheel'\n")
+
+        with pytest.raises(verifier.VerificationError, match="cannot open"):
+            verifier._check_archive(not_a_wheel)
+
+        assert verifier.main(["verify_wheel.py", str(not_a_wheel)]) == 1
+
+    def test_a_truncated_zip_is_reported(self, verifier, tmp_path):
+        wheel = _wheel_with_real_migrations(tmp_path)
+        truncated = tmp_path / "truncated.whl"
+        truncated.write_bytes(wheel.read_bytes()[: len(wheel.read_bytes()) // 3])
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_archive(truncated)
+
+    def test_a_member_with_invalid_bytes_is_rejected(self, verifier, tmp_path):
+        # distinct from the one-byte mutation case: this member is not even
+        # valid UTF-8, which used to escape as UnicodeDecodeError
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                zf.writestr(f"synapto/_migrations/{name}", b"\xff\xfe not utf-8")
+
+        with pytest.raises(verifier.VerificationError, match="checksum"):
+            verifier._check_archive(wheel)
+
+
+class TestSdistIsGated:
+    @pytest.fixture
+    def verifier(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+        spec = importlib.util.spec_from_file_location("verify_wheel_sdist", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _sdist(self, tmp_path, *, names=None, mutate=None, root_copy=False):
+        import io
+        import tarfile
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        path = tmp_path / "synapto-0.5.1.tar.gz"
+        with tarfile.open(path, "w:gz") as tar:
+            for name in names or EXPECTED:
+                raw = (bundle / name).read_text(encoding="utf-8").encode()
+                if name == mutate:
+                    raw += b" "
+                for member_name in [f"synapto-0.5.1/src/synapto/_migrations/{name}"] + (
+                    [f"synapto-0.5.1/migrations/{name}"] if root_copy else []
+                ):
+                    info = tarfile.TarInfo(member_name)
+                    info.size = len(raw)
+                    tar.addfile(info, io.BytesIO(raw))
+        return path
+
+    def test_a_correct_sdist_passes(self, verifier, tmp_path):
+        verifier._check_sdist(self._sdist(tmp_path))  # must not raise
+
+    def test_a_mutated_sdist_member_is_rejected(self, verifier, tmp_path):
+        with pytest.raises(verifier.VerificationError, match="expected"):
+            verifier._check_sdist(self._sdist(tmp_path, mutate="001_initial.sql"))
+
+    def test_a_root_migrations_copy_is_rejected(self, verifier, tmp_path):
+        with pytest.raises(verifier.VerificationError, match="outside"):
+            verifier._check_sdist(self._sdist(tmp_path, root_copy=True))
+
+    def test_a_missing_migration_is_rejected(self, verifier, tmp_path):
+        partial = {k: v for k, v in EXPECTED.items() if k != "004_add_memory_subtype.sql"}
+
+        with pytest.raises(verifier.VerificationError, match="expected"):
+            verifier._check_sdist(self._sdist(tmp_path, names=partial))
+
+    def test_a_non_tar_file_is_reported(self, verifier, tmp_path):
+        broken = tmp_path / "synapto-0.5.1.tar.gz"
+        broken.write_text("not a tarball")
+
+        with pytest.raises(verifier.VerificationError, match="cannot open"):
+            verifier._check_sdist(broken)

@@ -75,7 +75,7 @@ jobs:
       # The gate that makes this release line different: every artifact from
       # 0.1.0 to 0.5.0 shipped without migrations and would have failed here.
       - name: verify packaged migrations
-        run: uv run python scripts/verify_wheel.py dist/*.whl
+        run: uv run python scripts/verify_wheel.py dist/*.whl dist/*.tar.gz
 
       - name: upload verified artifacts
         uses: actions/upload-artifact@v4

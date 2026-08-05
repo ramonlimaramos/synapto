@@ -73,13 +73,14 @@ jobs:
       - name: set up python
         run: uv python install 3.11
 
-      - name: build wheel
-        run: uv build --wheel -o dist-verify --python 3.11
+      - name: build wheel and sdist
+        run: uv build -o dist-verify --python 3.11
 
-      # the artifact, not the source tree: the suite runs from a checkout where
-      # the old cwd fallback masked the missing migrations for five releases
+      # the artifacts, not the source tree: the suite runs from a checkout where
+      # the old cwd fallback masked the missing migrations for five releases.
+      # Both distributions are checked — the sdist is publishable too.
       - name: verify packaged migrations
-        run: uv run --python 3.11 python scripts/verify_wheel.py dist-verify/*.whl
+        run: uv run --python 3.11 python scripts/verify_wheel.py dist-verify/*.whl dist-verify/*.tar.gz
 
   test:
     runs-on: ubuntu-latest

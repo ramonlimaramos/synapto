@@ -14,7 +14,7 @@ and asserts that migration discovery works there. CI and the release workflow
 both run it, so a wheel without migrations cannot be published again.
 
 Usage:
-    python scripts/verify_wheel.py dist/synapto-0.5.1-py3-none-any.whl
+    python scripts/verify_wheel.py dist/synapto-0.5.1-py3-none-any.whl [dist/synapto-0.5.1.tar.gz]
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import venv
 import zipfile
@@ -62,7 +63,14 @@ class VerificationError(RuntimeError):
 
 def _check_archive(wheel: Path) -> None:
     """Assert the archive carries exactly the expected migration resources."""
-    with zipfile.ZipFile(wheel) as archive:
+    # opening is guarded too: a truncated or non-ZIP file raised BadZipFile
+    # here, outside the read guard, and escaped main as a raw traceback
+    try:
+        archive = zipfile.ZipFile(wheel)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise VerificationError(f"cannot open {wheel.name} as a wheel archive: {exc}") from exc
+
+    with archive:
         names = archive.namelist()
         sql_members = sorted(n for n in names if n.endswith(".sql"))
         bundled = sorted(n for n in sql_members if n.startswith(RESOURCE_PREFIX))
@@ -93,6 +101,39 @@ def _check_archive(wheel: Path) -> None:
                 raise VerificationError(f"{member} has checksum {digest}, expected {EXPECTED_MIGRATIONS[name]}")
 
     print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
+
+
+def _check_sdist(sdist: Path) -> None:
+    """Assert the source distribution carries the same exact migrations.
+
+    The release builds a wheel *and* an sdist and publishes both, but only the
+    wheel was gated — the sdist rode along labelled "verified". It is also the
+    artifact a downstream build can compile from, so an sdist missing its
+    migrations would reproduce the original defect through a different door.
+    """
+    try:
+        with tarfile.open(sdist, "r:gz") as archive:
+            members = [m for m in archive.getmembers() if m.name.endswith(".sql")]
+            bundled = sorted(m.name for m in members if RESOURCE_PREFIX in m.name)
+            stray = sorted(m.name for m in members if RESOURCE_PREFIX not in m.name)
+
+            if stray:
+                raise VerificationError(f"sdist contains SQL outside {RESOURCE_PREFIX}: {stray}")
+
+            found = {}
+            for member in members:
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise VerificationError(f"cannot read {member.name} from the sdist")
+                name = member.name.rsplit("/", 1)[-1]
+                found[name] = hashlib.sha256(handle.read()).hexdigest()[:16]
+    except (OSError, tarfile.TarError) as exc:
+        raise VerificationError(f"cannot open {sdist.name} as a source distribution: {exc}") from exc
+
+    if found != EXPECTED_MIGRATIONS:
+        raise VerificationError(f"sdist migrations are {found}, expected {EXPECTED_MIGRATIONS}")
+
+    print(f"sdist: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
 
 
 def _create_environment(env_dir: Path) -> Path:
@@ -181,12 +222,17 @@ def _check_probe(report: dict, workdir: Path) -> None:
     print("installed: a foreign cwd/migrations/999_foreign.sql was correctly ignored")
 
 
-def verify(wheel: Path) -> None:
+def verify(wheel: Path, sdist: Path | None = None) -> None:
     if not wheel.is_file():
         raise VerificationError(f"no such wheel: {wheel}")
 
     print(f"verifying {wheel.name}")
     _check_archive(wheel)
+
+    if sdist is not None:
+        if not sdist.is_file():
+            raise VerificationError(f"no such sdist: {sdist}")
+        _check_sdist(sdist)
 
     with tempfile.TemporaryDirectory(prefix="synapto-wheel-") as tmp:
         workdir = Path(tmp)
@@ -196,12 +242,12 @@ def verify(wheel: Path) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(f"usage: {argv[0]} <wheel>", file=sys.stderr)
+    if len(argv) not in (2, 3):
+        print(f"usage: {argv[0]} <wheel> [sdist]", file=sys.stderr)
         return 2
 
     try:
-        verify(Path(argv[1]))
+        verify(Path(argv[1]), Path(argv[2]) if len(argv) == 3 else None)
     except (VerificationError, subprocess.CalledProcessError) as exc:
         print(f"wheel verification FAILED: {exc}", file=sys.stderr)
         return 1

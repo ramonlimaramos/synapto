@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- **`scripts/verify_wheel.py`**, an artifact gate that installs a built wheel into a throwaway environment outside the repository and asserts that migration discovery returns the expected files and checksums, ignoring any foreign `cwd/migrations`. It runs in CI on Python 3.11 and in the release workflow immediately after build — before the version commit, tag, PyPI upload, and GitHub release — so a wheel without migrations cannot be published again.
+- **`scripts/verify_wheel.py`**, an artifact gate that installs a built wheel into a throwaway environment outside the repository and asserts that migration discovery returns the expected files and checksums, ignoring any foreign `cwd/migrations`. It checks the wheel *and* the sdist, runs in CI on Python 3.11, and runs in the release workflow immediately after build — before the tag, the PyPI upload, and the GitHub release — so a distribution without migrations cannot be published again. The release jobs are ordered build → tag → publish → github_release, so the recoverable mutation happens before the immutable one.
 
 ### Security
 
