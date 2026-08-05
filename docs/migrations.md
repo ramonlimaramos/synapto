@@ -41,7 +41,7 @@ synapto migrate down --to 1     # rollback everything after version 1
 
 ## Writing a New Migration
 
-1. Create `src/synapto/_migrations/003_your_change.sql`
+1. Create `src/synapto/_migrations/005_your_change.sql` (the next unused number on this branch)
 2. Add `-- migrate:up` and `-- migrate:down` sections
 3. Run `synapto migrate up`
 

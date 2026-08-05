@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -42,11 +43,13 @@ RESOURCE_PREFIX = "synapto/_migrations/"
 # onto sys.path and mask a missing resource.
 PROBE = """
 import json
+import sys
 import synapto
 from synapto.db.migrations import discover_migrations, MigrationDiscoveryError
 
 found = discover_migrations()
 print(json.dumps({
+    "python": "%d.%d" % sys.version_info[:2],
     "synapto_file": synapto.__file__,
     "migrations": [[m.filename, m.checksum] for m in found],
 }))
@@ -61,19 +64,28 @@ def _check_archive(wheel: Path) -> None:
     """Assert the archive carries exactly the expected migration resources."""
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
+        sql_members = sorted(n for n in names if n.endswith(".sql"))
+        bundled = sorted(n for n in sql_members if n.startswith(RESOURCE_PREFIX))
+        stray = sorted(set(sql_members) - set(bundled))
 
-    sql_members = sorted(n for n in names if n.endswith(".sql"))
-    bundled = sorted(n for n in sql_members if n.startswith(RESOURCE_PREFIX))
-    stray = sorted(set(sql_members) - set(bundled))
+        if stray:
+            raise VerificationError(f"wheel contains SQL outside {RESOURCE_PREFIX}: {stray}")
 
-    if stray:
-        raise VerificationError(f"wheel contains SQL outside {RESOURCE_PREFIX}: {stray}")
+        expected = sorted(RESOURCE_PREFIX + name for name in EXPECTED_MIGRATIONS)
+        if bundled != expected:
+            raise VerificationError(f"wheel migration members are {bundled}, expected {expected}")
 
-    expected = sorted(RESOURCE_PREFIX + name for name in EXPECTED_MIGRATIONS)
-    if bundled != expected:
-        raise VerificationError(f"wheel migration members are {bundled}, expected {expected}")
+        # names alone would accept a wheel carrying arbitrary SQL under the right
+        # filenames; the checksum is the migration's identity in the tracking
+        # table, so the bytes are what must match
+        for member in bundled:
+            content = archive.read(member).decode("utf-8")
+            digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+            name = member[len(RESOURCE_PREFIX) :]
+            if digest != EXPECTED_MIGRATIONS[name]:
+                raise VerificationError(f"{member} has checksum {digest}, expected {EXPECTED_MIGRATIONS[name]}")
 
-    print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}")
+    print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
 
 
 def _create_environment(env_dir: Path) -> Path:
@@ -84,7 +96,13 @@ def _create_environment(env_dir: Path) -> Path:
     be the only option. Falls back to ``venv`` for environments without uv.
     """
     if shutil.which("uv"):
-        subprocess.run(["uv", "venv", "--quiet", str(env_dir)], check=True)
+        # --python is load-bearing: without it uv picks its own newest managed
+        # interpreter, so the job labelled 3.11 was actually probing 3.13 and the
+        # minimum supported version went untested
+        subprocess.run(
+            ["uv", "venv", "--quiet", "--python", sys.executable, str(env_dir)],
+            check=True,
+        )
     else:
         venv.create(env_dir, with_pip=True, clear=True)
 
@@ -134,6 +152,13 @@ def _probe_installed(wheel: Path, workdir: Path) -> dict:
 
 
 def _check_probe(report: dict, workdir: Path) -> None:
+    expected_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if report.get("python") != expected_python:
+        raise VerificationError(
+            f"probe ran under Python {report.get('python')}, expected {expected_python} — "
+            "the environment did not inherit the verifying interpreter"
+        )
+
     installed_at = Path(report["synapto_file"]).resolve()
     if workdir.resolve() not in installed_at.parents:
         raise VerificationError(f"synapto resolved to {installed_at}, outside the temporary environment")

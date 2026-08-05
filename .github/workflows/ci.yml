@@ -26,7 +26,7 @@ jobs:
           UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
       - name: ruff check
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
   security:
     runs-on: ubuntu-latest

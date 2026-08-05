@@ -8,6 +8,7 @@ against an installed distribution. Everything below runs without a database.
 
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest
 from synapto.db.migrations import (
     MIGRATIONS_PACKAGE,
     MigrationDiscoveryError,
+    _compute_checksum,
     discover_migrations,
     get_migration_status,
     migrate_down,
@@ -208,6 +210,22 @@ class TestEntryPointsValidateBeforeTouchingTheDatabase:
         assert client.calls == []
 
 
+def _wheel_with_real_migrations(tmp_path, mutate: str | None = None) -> Path:
+    """Build a wheel carrying the actual shipped migration bytes."""
+    from importlib import resources
+
+    wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+    bundle = resources.files(MIGRATIONS_PACKAGE)
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("synapto/__init__.py", "")
+        for name in EXPECTED:
+            body = (bundle / name).read_text(encoding="utf-8")
+            if name == mutate:
+                body += " "
+            zf.writestr(f"synapto/_migrations/{name}", body)
+    return wheel
+
+
 class TestVerifierScript:
     """The artifact gate itself — it is the thing standing between us and a repeat."""
 
@@ -225,13 +243,17 @@ class TestVerifierScript:
         assert verifier.EXPECTED_MIGRATIONS == EXPECTED
 
     def test_archive_check_accepts_a_correct_wheel(self, verifier, tmp_path):
-        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
-        with zipfile.ZipFile(wheel, "w") as zf:
-            zf.writestr("synapto/__init__.py", "")
-            for name in EXPECTED:
-                zf.writestr(f"synapto/_migrations/{name}", MIGRATION_BODY)
+        wheel = _wheel_with_real_migrations(tmp_path)
 
         verifier._check_archive(wheel)  # must not raise
+
+    def test_archive_check_rejects_a_one_byte_mutation(self, verifier, tmp_path):
+        # names alone would accept arbitrary SQL under the right filenames; the
+        # checksum is the migration's identity in the tracking table
+        wheel = _wheel_with_real_migrations(tmp_path, mutate="001_initial.sql")
+
+        with pytest.raises(verifier.VerificationError, match="checksum"):
+            verifier._check_archive(wheel)
 
     def test_archive_check_rejects_a_wheel_without_migrations(self, verifier, tmp_path):
         # this is precisely what every published 0.1.0-0.5.0 wheel looks like
@@ -264,6 +286,7 @@ class TestVerifierScript:
 
     def test_probe_check_rejects_an_out_of_environment_install(self, verifier, tmp_path):
         report = {
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             "synapto_file": "/usr/lib/python3/synapto/__init__.py",
             "migrations": [[name, checksum] for name, checksum in EXPECTED.items()],
         }
@@ -276,6 +299,7 @@ class TestVerifierScript:
         installed.parent.mkdir(parents=True)
         installed.touch()
         report = {
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             "synapto_file": str(installed),
             "migrations": [["999_foreign.sql", "deadbeefdeadbeef"]],
         }
@@ -288,3 +312,201 @@ class TestVerifierScript:
 
     def test_wrong_argument_count_is_reported(self, verifier):
         assert verifier.main(["verify_wheel.py"]) == 2
+
+
+class TestParserIsFailClosed:
+    """A malformed migration must never become a recorded no-op.
+
+    At the previously reviewed head a body with no markers parsed into two empty
+    sections, and the runner happily inserted it into synapto_migrations as
+    applied. These are the shapes that used to slip through.
+    """
+
+    def _write(self, tmp_path, name, body):
+        (tmp_path / name).write_text(body)
+        return tmp_path
+
+    def test_a_body_with_no_markers_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_plain.sql", "SELECT 1;\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="exactly one"):
+            discover_migrations(source)
+
+    def test_a_missing_down_marker_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_up_only.sql", "-- migrate:up\nSELECT 1;\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="exactly one"):
+            discover_migrations(source)
+
+    def test_a_missing_up_marker_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_down_only.sql", "-- migrate:down\nSELECT 1;\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="exactly one"):
+            discover_migrations(source)
+
+    def test_reversed_markers_are_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_reversed.sql", "-- migrate:down\nSELECT 2;\n-- migrate:up\nSELECT 1;\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="before"):
+            discover_migrations(source)
+
+    def test_duplicate_markers_are_rejected(self, tmp_path):
+        body = "-- migrate:up\nSELECT 1;\n-- migrate:up\nSELECT 3;\n-- migrate:down\nSELECT 2;\n"
+        source = self._write(tmp_path, "001_dupe.sql", body)
+
+        with pytest.raises(MigrationDiscoveryError, match="exactly one"):
+            discover_migrations(source)
+
+    def test_an_empty_up_section_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_empty_up.sql", "-- migrate:up\n\n-- migrate:down\nSELECT 2;\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="empty up"):
+            discover_migrations(source)
+
+    def test_an_empty_down_section_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_empty_down.sql", "-- migrate:up\nSELECT 1;\n-- migrate:down\n\n")
+
+        with pytest.raises(MigrationDiscoveryError, match="empty down"):
+            discover_migrations(source)
+
+    @pytest.mark.parametrize("name", ["1_short.sql", "01_short.sql", "0001_long.sql", "000_zero.sql", "-01_neg.sql"])
+    def test_non_three_digit_prefixes_are_rejected(self, tmp_path, name):
+        source = self._write(tmp_path, name, MIGRATION_BODY)
+
+        with pytest.raises(MigrationDiscoveryError):
+            discover_migrations(source)
+
+    def test_an_empty_description_is_rejected(self, tmp_path):
+        source = self._write(tmp_path, "001_.sql", MIGRATION_BODY)
+
+        with pytest.raises(MigrationDiscoveryError, match="malformed"):
+            discover_migrations(source)
+
+    def test_a_valid_body_keeps_its_sections_and_checksum(self, tmp_path):
+        body = "-- migrate:up\nCREATE TABLE t();\n-- migrate:down\nDROP TABLE t;\n"
+        source = self._write(tmp_path, "001_valid.sql", body)
+
+        parsed = discover_migrations(source)[0]
+
+        assert parsed.up_sql == "CREATE TABLE t();"
+        assert parsed.down_sql == "DROP TABLE t;"
+        assert parsed.checksum == _compute_checksum(body)
+
+    def test_markers_are_matched_case_insensitively(self, tmp_path):
+        source = self._write(tmp_path, "001_case.sql", "-- MIGRATE:UP\nSELECT 1;\n-- Migrate:Down\nSELECT 2;\n")
+
+        assert discover_migrations(source)[0].up_sql == "SELECT 1;"
+
+
+class _CountingSource:
+    """Wraps a Traversable and counts how many times it is enumerated."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.iterdir_calls = 0
+
+    @property
+    def name(self):
+        return self._inner.name
+
+    def is_dir(self):
+        return self._inner.is_dir()
+
+    def is_file(self):
+        return self._inner.is_file()
+
+    def iterdir(self):
+        self.iterdir_calls += 1
+        return self._inner.iterdir()
+
+    def read_text(self, encoding="utf-8"):
+        return self._inner.read_text(encoding=encoding)
+
+
+class _NullConnection:
+    """Accepts the apply statements without a database."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *args, **kwargs):
+        return None
+
+
+class _RecordingClient:
+    """Accepts database calls and records when they happened."""
+
+    def __init__(self, source):
+        self._source = source
+        self.enumerations_at_first_call = None
+
+    def _note(self):
+        if self.enumerations_at_first_call is None:
+            self.enumerations_at_first_call = self._source.iterdir_calls
+
+    async def execute(self, *args, **kwargs):
+        self._note()
+        return []
+
+    async def execute_one(self, *args, **kwargs):
+        self._note()
+        return None
+
+    def acquire(self):
+        self._note()
+        return _NullConnection()
+
+
+class TestSourceIsReadOnlyOnce:
+    async def test_run_migrations_enumerates_once(self, tmp_path):
+        # run_migrations used to discover, write through the legacy bridge, and
+        # then discover again inside migrate_up — a source that changed in
+        # between could fail with database writes already committed
+        (tmp_path / "001_only.sql").write_text(MIGRATION_BODY)
+        source = _CountingSource(tmp_path)
+        client = _RecordingClient(source)
+
+        await run_migrations(client, source)
+
+        assert source.iterdir_calls == 1
+        assert client.enumerations_at_first_call == 1
+
+    async def test_migrate_up_enumerates_once(self, tmp_path):
+        (tmp_path / "001_only.sql").write_text(MIGRATION_BODY)
+        source = _CountingSource(tmp_path)
+
+        await migrate_up(_RecordingClient(source), source)
+
+        assert source.iterdir_calls == 1
+
+
+class TestTraversableErrorsAreConverted:
+    def test_a_zip_path_pointing_at_a_file_is_rejected(self, tmp_path):
+        # zipfile.Path raises ValueError("Can't listdir a file"), which used to
+        # escape as a raw exception rather than a MigrationDiscoveryError
+        archive = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("_migrations/001_zipped.sql", MIGRATION_BODY)
+
+        with pytest.raises(MigrationDiscoveryError):
+            discover_migrations(zipfile.Path(archive, "_migrations/001_zipped.sql"))
+
+    def test_an_entry_that_fails_inspection_is_reported(self, tmp_path):
+        class _ExplodingEntry:
+            name = "001_boom.sql"
+
+            def is_file(self):
+                raise OSError("stat failed")
+
+        class _Source:
+            def is_dir(self):
+                return True
+
+            def iterdir(self):
+                return [_ExplodingEntry()]
+
+        with pytest.raises(MigrationDiscoveryError, match="not a readable directory"):
+            discover_migrations(_Source())

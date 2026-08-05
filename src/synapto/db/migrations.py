@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from importlib import resources
 from importlib.resources.abc import Traversable
@@ -34,6 +35,13 @@ if TYPE_CHECKING:  # keeps the module importable without third-party dependencie
 logger = logging.getLogger("synapto.db.migrations")
 
 MIGRATIONS_PACKAGE = "synapto._migrations"
+
+# NNN_description.sql — exactly three digits, so ordering is lexicographic and
+# numeric at once, and the description cannot smuggle path separators.
+MIGRATION_FILENAME = re.compile(r"(?P<version>\d{3})_(?P<description>[A-Za-z0-9][A-Za-z0-9._-]*)\.sql")
+
+UP_MARKER = "-- migrate:up"
+DOWN_MARKER = "-- migrate:down"
 
 
 class MigrationDiscoveryError(RuntimeError):
@@ -70,59 +78,84 @@ def _compute_checksum(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def _split_sections(filename: str, content: str) -> tuple[str, str]:
+    """Split a migration body into its up and down sections.
+
+    Every structural rule is enforced rather than tolerated. The previous parser
+    accepted a body with no markers at all and produced two empty sections,
+    which the runner then recorded as a successfully applied migration — a
+    malformed file became a silent no-op in the tracking table.
+    """
+    up_lines: list[str] = []
+    down_lines: list[str] = []
+    seen_up = 0
+    seen_down = 0
+    section: list[str] | None = None
+
+    for line in content.split("\n"):
+        marker = line.strip().lower()
+        if marker == UP_MARKER:
+            seen_up += 1
+            section = up_lines
+            continue
+        if marker == DOWN_MARKER:
+            seen_down += 1
+            section = down_lines
+            continue
+        if section is not None:
+            section.append(line)
+
+    if seen_up != 1 or seen_down != 1:
+        raise MigrationDiscoveryError(
+            f"migration {filename!r} must contain exactly one {UP_MARKER!r} and one "
+            f"{DOWN_MARKER!r} marker (found {seen_up} and {seen_down})"
+        )
+    if content.lower().index(UP_MARKER) > content.lower().index(DOWN_MARKER):
+        raise MigrationDiscoveryError(f"migration {filename!r} declares {DOWN_MARKER!r} before {UP_MARKER!r}")
+
+    up_sql = "\n".join(up_lines).strip()
+    down_sql = "\n".join(down_lines).strip()
+    if not up_sql:
+        raise MigrationDiscoveryError(f"migration {filename!r} has an empty up section")
+    if not down_sql:
+        raise MigrationDiscoveryError(f"migration {filename!r} has an empty down section")
+
+    return up_sql, down_sql
+
+
 def _parse_migration_file(resource: Traversable) -> Migration:
     """Parse a migration SQL resource into up/down sections.
 
     Takes a Traversable rather than a Path so the same code reads a source
     checkout, an installed wheel, and a zip-backed distribution.
 
-    Expected format:
-        -- migrate:up
-        <SQL statements>
-        -- migrate:down
-        <SQL statements>
-
     Raises:
-        MigrationDiscoveryError: the resource cannot be decoded, or its name
-            does not start with a numeric version.
+        MigrationDiscoveryError: the name does not match ``NNN_description.sql``,
+            the resource cannot be read, or the body is structurally invalid.
     """
     filename = resource.name
+
+    match = MIGRATION_FILENAME.fullmatch(filename)
+    if match is None:
+        raise MigrationDiscoveryError(
+            f"migration {filename!r} is malformed: expected NNN_description.sql with exactly three digits"
+        )
+    version = int(match.group("version"))
+    if version <= 0:
+        raise MigrationDiscoveryError(f"migration {filename!r} must have a positive version, got {version}")
+
     try:
         content = resource.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
         raise MigrationDiscoveryError(f"cannot read migration {filename!r}: {exc}") from exc
 
-    version_str = filename.split("_", 1)[0]
-    try:
-        version = int(version_str)
-    except ValueError as exc:
-        raise MigrationDiscoveryError(
-            f"migration {filename!r} is malformed: expected a NNN_description.sql name"
-        ) from exc
-
-    up_sql = ""
-    down_sql = ""
-    current_section = None
-
-    for line in content.split("\n"):
-        stripped = line.strip().lower()
-        if stripped == "-- migrate:up":
-            current_section = "up"
-            continue
-        elif stripped == "-- migrate:down":
-            current_section = "down"
-            continue
-
-        if current_section == "up":
-            up_sql += line + "\n"
-        elif current_section == "down":
-            down_sql += line + "\n"
+    up_sql, down_sql = _split_sections(filename, content)
 
     return Migration(
         version=version,
         filename=filename,
-        up_sql=up_sql.strip(),
-        down_sql=down_sql.strip(),
+        up_sql=up_sql,
+        down_sql=down_sql,
         checksum=_compute_checksum(content),
     )
 
@@ -150,12 +183,20 @@ def discover_migrations(migrations_dir: Traversable | None = None) -> list[Migra
                 "the distribution is missing its packaged migrations"
             ) from exc
 
+    # is_dir() and is_file() sit inside the guard too: a zipfile.Path aimed at a
+    # file raises ValueError("Can't listdir a file") rather than
+    # NotADirectoryError, and that escaped as a raw exception before
     try:
+        if not source.is_dir():
+            raise MigrationDiscoveryError(f"migration source {source!r} is not a directory")
         entries = sorted(source.iterdir(), key=lambda entry: entry.name)
-    except (OSError, NotADirectoryError) as exc:
+        sql_entries = [entry for entry in entries if entry.name.endswith(".sql") and entry.is_file()]
+    except MigrationDiscoveryError:
+        raise
+    except (OSError, ValueError) as exc:
         raise MigrationDiscoveryError(f"migration source {source!r} is not a readable directory: {exc}") from exc
 
-    migrations = [_parse_migration_file(entry) for entry in entries if entry.name.endswith(".sql") and entry.is_file()]
+    migrations = [_parse_migration_file(entry) for entry in sql_entries]
 
     if not migrations:
         raise MigrationDiscoveryError(f"migration source {source!r} contains no .sql migrations")
@@ -187,6 +228,22 @@ async def migrate_up(
     # database is touched, so a broken install never half-initializes a schema
     all_migrations = discover_migrations(migrations_dir)
 
+    return await _apply_migrations(client, all_migrations, target_version)
+
+
+async def _apply_migrations(
+    client: PostgresClient,
+    all_migrations: list[Migration],
+    target_version: int | None = None,
+) -> list[str]:
+    """Apply already-parsed migrations.
+
+    Takes the parsed list rather than a source so a caller that has already
+    discovered them does not enumerate and re-read the resource a second time.
+    ``run_migrations`` used to discover, write to the database through the
+    legacy bridge, and then discover again inside ``migrate_up`` — with a
+    mutable source, the second read could fail after those writes had landed.
+    """
     await _ensure_tracking_table(client)
     applied = await get_applied_migrations(client)
 
@@ -312,12 +369,13 @@ async def _migrate_from_legacy_schema(client: PostgresClient) -> bool:
 
 async def run_migrations(client: PostgresClient, migrations_dir: Traversable | None = None) -> None:
     """Apply all pending migrations. Handles legacy schema detection."""
-    # validated before the legacy bridge, which writes to the database: the
-    # bridge swallows exceptions, so discovery cannot be left to fail inside it
-    discover_migrations(migrations_dir)
+    # discovered once, before the legacy bridge writes anything: the bridge
+    # swallows exceptions, and re-reading afterwards would let a source that
+    # changed underneath us fail with database writes already committed
+    all_migrations = discover_migrations(migrations_dir)
 
     await _migrate_from_legacy_schema(client)
-    applied = await migrate_up(client, migrations_dir)
+    applied = await _apply_migrations(client, all_migrations)
     if applied:
         logger.info("applied %d migration(s): %s", len(applied), ", ".join(applied))
     else:
