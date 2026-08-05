@@ -38,7 +38,7 @@ MIGRATIONS_PACKAGE = "synapto._migrations"
 
 # NNN_description.sql — exactly three digits, so ordering is lexicographic and
 # numeric at once, and the description cannot smuggle path separators.
-MIGRATION_FILENAME = re.compile(r"(?P<version>\d{3})_(?P<description>[A-Za-z0-9][A-Za-z0-9._-]*)\.sql")
+MIGRATION_FILENAME = re.compile(r"(?P<version>[0-9]{3})_(?P<description>[A-Za-z0-9][A-Za-z0-9._-]*)\.sql")
 
 UP_MARKER = "-- migrate:up"
 DOWN_MARKER = "-- migrate:down"
@@ -88,30 +88,30 @@ def _split_sections(filename: str, content: str) -> tuple[str, str]:
     """
     up_lines: list[str] = []
     down_lines: list[str] = []
-    seen_up = 0
-    seen_down = 0
+    # the order of the markers actually recognized, not of text that merely
+    # mentions them: a substring search saw marker words inside ordinary
+    # comments, rejecting valid files and accepting reversed ones
+    encountered: list[str] = []
     section: list[str] | None = None
 
     for line in content.split("\n"):
         marker = line.strip().lower()
         if marker == UP_MARKER:
-            seen_up += 1
+            encountered.append(UP_MARKER)
             section = up_lines
             continue
         if marker == DOWN_MARKER:
-            seen_down += 1
+            encountered.append(DOWN_MARKER)
             section = down_lines
             continue
         if section is not None:
             section.append(line)
 
-    if seen_up != 1 or seen_down != 1:
+    if encountered != [UP_MARKER, DOWN_MARKER]:
         raise MigrationDiscoveryError(
-            f"migration {filename!r} must contain exactly one {UP_MARKER!r} and one "
-            f"{DOWN_MARKER!r} marker (found {seen_up} and {seen_down})"
+            f"migration {filename!r} must contain exactly one {UP_MARKER!r} followed by exactly one "
+            f"{DOWN_MARKER!r} (found {encountered or 'none'})"
         )
-    if content.lower().index(UP_MARKER) > content.lower().index(DOWN_MARKER):
-        raise MigrationDiscoveryError(f"migration {filename!r} declares {DOWN_MARKER!r} before {UP_MARKER!r}")
 
     up_sql = "\n".join(up_lines).strip()
     down_sql = "\n".join(down_lines).strip()

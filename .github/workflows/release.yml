@@ -84,28 +84,15 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  publish:
+  # Tagging comes before publishing on purpose. A PyPI upload is immutable, so
+  # discovering a tag collision afterwards would leave a published artifact with
+  # no matching source tag and no way to undo it. Git, by contrast, is
+  # recoverable — so the mutation that can be fixed happens first.
+  tag:
     needs: build
     runs-on: ubuntu-latest
-    # Ramon configures this environment with a required reviewer and a
-    # deployment-branch policy allowing only release/0.5.
+    # First external mutation, so it sits behind the protected release gate.
     environment: release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: download verified artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: publish to pypi
-        uses: pypa/gh-action-pypi-publish@release/v1
-
-  tag:
-    needs: [build, publish]
-    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -136,11 +123,46 @@ jobs:
             git push origin "${tag}"
           fi
 
+  publish:
+    needs: [build, tag]
+    runs-on: ubuntu-latest
+    # Trusted Publishing resolves its identity through this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # No skip-existing: a re-run must fail loudly rather than paper over a
+      # partial publication, so recovery stays deterministic.
+      - name: publish to pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github_release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Last and separately retryable: if this fails, re-running it does not
+      # republish to PyPI.
       - name: create github release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ needs.build.outputs.version }}"
           name: "v${{ needs.build.outputs.version }}"
+          files: dist/*
           body: |
             ## what's changed
 

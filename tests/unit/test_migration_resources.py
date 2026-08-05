@@ -347,7 +347,7 @@ class TestParserIsFailClosed:
     def test_reversed_markers_are_rejected(self, tmp_path):
         source = self._write(tmp_path, "001_reversed.sql", "-- migrate:down\nSELECT 2;\n-- migrate:up\nSELECT 1;\n")
 
-        with pytest.raises(MigrationDiscoveryError, match="before"):
+        with pytest.raises(MigrationDiscoveryError, match="followed by"):
             discover_migrations(source)
 
     def test_duplicate_markers_are_rejected(self, tmp_path):
@@ -510,3 +510,146 @@ class TestTraversableErrorsAreConverted:
 
         with pytest.raises(MigrationDiscoveryError, match="not a readable directory"):
             discover_migrations(_Source())
+
+
+class TestMarkerOrderUsesRealMarkers:
+    """Order came from a substring search, which saw marker text in comments."""
+
+    def test_a_preamble_mentioning_down_does_not_reject_a_valid_file(self, tmp_path):
+        body = "-- preamble mentions -- migrate:down in prose\n-- migrate:up\nSELECT 1;\n-- migrate:down\nSELECT 2;\n"
+        (tmp_path / "001_commented.sql").write_text(body)
+
+        parsed = discover_migrations(tmp_path)[0]
+
+        assert parsed.up_sql == "SELECT 1;"
+        assert parsed.down_sql == "SELECT 2;"
+
+    def test_a_preamble_mentioning_up_does_not_accept_reversed_markers(self, tmp_path):
+        body = "-- preamble mentions -- migrate:up in prose\n-- migrate:down\nSELECT 2;\n-- migrate:up\nSELECT 1;\n"
+        (tmp_path / "001_reversed_commented.sql").write_text(body)
+
+        with pytest.raises(MigrationDiscoveryError):
+            discover_migrations(tmp_path)
+
+    def test_unicode_decimal_digits_do_not_satisfy_the_filename_shape(self, tmp_path):
+        # \d matches Unicode decimals, so Arabic-Indic digits would have passed
+        # for a name that is not the documented ASCII NNN shape
+        (tmp_path / "١٢٣_unicode.sql").write_text(MIGRATION_BODY)
+
+        with pytest.raises(MigrationDiscoveryError, match="malformed"):
+            discover_migrations(tmp_path)
+
+
+class TestVerifierRejectsInterpreterMismatch:
+    def test_a_child_on_a_different_python_is_rejected(self, tmp_path):
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+        spec = importlib.util.spec_from_file_location("verify_wheel_mismatch", path)
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+
+        installed = tmp_path / "venv" / "lib" / "synapto" / "__init__.py"
+        installed.parent.mkdir(parents=True)
+        installed.touch()
+        report = {
+            "python": "2.7",  # never the parent
+            "synapto_file": str(installed),
+            "migrations": [[name, checksum] for name, checksum in EXPECTED.items()],
+        }
+
+        with pytest.raises(verifier.VerificationError, match="expected"):
+            verifier._check_probe(report, tmp_path)
+
+
+class _TrackingSource:
+    """Counts every enumeration and every resource read."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.iterdir_calls = 0
+        self.read_calls = 0
+
+    @property
+    def name(self):
+        return self._inner.name
+
+    def is_dir(self):
+        return self._inner.is_dir()
+
+    def is_file(self):
+        return self._inner.is_file()
+
+    def iterdir(self):
+        self.iterdir_calls += 1
+        return [_TrackedEntry(entry, self) for entry in self._inner.iterdir()]
+
+    def read_text(self, encoding="utf-8"):
+        self.read_calls += 1
+        return self._inner.read_text(encoding=encoding)
+
+
+class _TrackedEntry:
+    def __init__(self, inner, tracker):
+        self._inner = inner
+        self._tracker = tracker
+
+    @property
+    def name(self):
+        return self._inner.name
+
+    def is_file(self):
+        return self._inner.is_file()
+
+    def read_text(self, encoding="utf-8"):
+        self._tracker.read_calls += 1
+        return self._inner.read_text(encoding=encoding)
+
+
+class _SnapshottingClient:
+    """Records the source's access counts at the moment of the first DB call."""
+
+    def __init__(self, source):
+        self._source = source
+        self.snapshot = None
+
+    def _note(self):
+        if self.snapshot is None:
+            self.snapshot = (self._source.iterdir_calls, self._source.read_calls)
+
+    async def execute(self, *args, **kwargs):
+        self._note()
+        return []
+
+    async def execute_one(self, *args, **kwargs):
+        self._note()
+        return None
+
+    def acquire(self):
+        self._note()
+        return _NullConnection()
+
+
+class TestResourceIsReadOnceBeforeAnyDatabaseCall:
+    async def test_run_migrations_reads_each_migration_exactly_once(self, tmp_path):
+        for index in (1, 2):
+            (tmp_path / f"00{index}_only.sql").write_text(MIGRATION_BODY)
+        source = _TrackingSource(tmp_path)
+        client = _SnapshottingClient(source)
+
+        await run_migrations(client, source)
+
+        # one enumeration, one read per migration, and every one of them before
+        # the first database call
+        assert source.iterdir_calls == 1
+        assert source.read_calls == 2
+        assert client.snapshot == (1, 2)
+
+    async def test_no_resource_access_happens_after_the_first_database_call(self, tmp_path):
+        (tmp_path / "001_only.sql").write_text(MIGRATION_BODY)
+        source = _TrackingSource(tmp_path)
+        client = _SnapshottingClient(source)
+
+        await run_migrations(client, source)
+
+        assert (source.iterdir_calls, source.read_calls) == client.snapshot

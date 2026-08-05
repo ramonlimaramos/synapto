@@ -78,9 +78,16 @@ def _check_archive(wheel: Path) -> None:
         # names alone would accept a wheel carrying arbitrary SQL under the right
         # filenames; the checksum is the migration's identity in the tracking
         # table, so the bytes are what must match
+        # Hashed straight from the archive: decoding and re-encoding first would
+        # have verified a UTF-8 round-trip rather than what the wheel actually
+        # contains, and invalid bytes escaped as an uncaught UnicodeDecodeError.
         for member in bundled:
-            content = archive.read(member).decode("utf-8")
-            digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+            try:
+                raw = archive.read(member)
+            except (KeyError, OSError, zipfile.BadZipFile) as exc:
+                raise VerificationError(f"cannot read {member} from the wheel: {exc}") from exc
+
+            digest = hashlib.sha256(raw).hexdigest()[:16]
             name = member[len(RESOURCE_PREFIX) :]
             if digest != EXPECTED_MIGRATIONS[name]:
                 raise VerificationError(f"{member} has checksum {digest}, expected {EXPECTED_MIGRATIONS[name]}")
