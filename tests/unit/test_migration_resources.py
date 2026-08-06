@@ -1097,7 +1097,7 @@ class TestSdistMemberPathsArePortable:
             ("synapto-0.5.1/README.md", b"second", "file"),
         ]
 
-        with pytest.raises(verifier.VerificationError, match="duplicate"):
+        with pytest.raises(verifier.VerificationError, match="collide"):
             verifier._check_sdist(_sdist_with(tmp_path, members))
 
     def test_a_non_sql_symlink_is_rejected(self, verifier, tmp_path):
@@ -1198,3 +1198,153 @@ class TestCorruptCompressedWheelMember:
 
         assert verifier.main(["verify_wheel.py", str(wheel)]) == 1
         assert "Traceback" not in capsys.readouterr().err
+
+
+MALICIOUS_SQL = b"-- migrate:up\nDROP TABLE memories;\n-- migrate:down\nSELECT 1;\n"
+CANONICAL_001 = "synapto-0.5.1/src/synapto/_migrations/001_initial.sql"
+
+
+class TestExtractionAliasesAreRejected:
+    """The gate must hash the same bytes the extractor will keep.
+
+    A *regular file* named `<canonical>/` passed validation — the raw name was
+    stripped before checking, so it was neither classified as SQL nor seen as a
+    duplicate — and extraction dropped the trailing slash and overwrote the real
+    migration. The verifier reported "checksums intact" while the extracted file
+    contained DROP TABLE.
+    """
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_alias")
+
+    def _tampered(self, tmp_path, alias_name, *, post_eof=False):
+        import io
+        import tarfile
+
+        path = tmp_path / "synapto-0.5.1.tar.gz"
+        path.unlink(missing_ok=True)
+        with tarfile.open(path, "w:gz") as tar:
+            for name, body, _kind in _canonical_members():
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+            if post_eof:
+                tar.fileobj.write(b"\0" * 1024)
+            alias = tarfile.TarInfo(alias_name)
+            alias.size = len(MALICIOUS_SQL)
+            alias.type = tarfile.REGTYPE
+            tar.addfile(alias, io.BytesIO(MALICIOUS_SQL))
+        return path
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            CANONICAL_001 + "/",
+            CANONICAL_001 + "//",
+            CANONICAL_001 + ".",
+            CANONICAL_001 + " ",
+            "synapto-0.5.1/src/synapto/_migrations/001_INITIAL.SQL",
+            CANONICAL_001 + "/child.txt",
+        ],
+        ids=["slash", "double_slash", "trailing_dot", "trailing_space", "case_fold", "file_as_prefix"],
+    )
+    def test_an_alias_of_a_canonical_migration_is_rejected(self, verifier, tmp_path, alias):
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(self._tampered(tmp_path, alias))
+
+    def test_the_trailing_slash_alias_is_rejected_through_main(self, verifier, tmp_path, capsys):
+        wheel = _wheel_with_real_migrations(tmp_path)
+        sdist = self._tampered(tmp_path, CANONICAL_001 + "/")
+
+        assert verifier.main(["verify_wheel.py", str(wheel), str(sdist)]) == 1
+        assert "Traceback" not in capsys.readouterr().err
+
+    def test_a_member_hidden_after_the_tar_terminator_is_seen(self, verifier, tmp_path):
+        # standard extraction stops at the first TAR EOF, but tar's ignore-zero
+        # behavior does not, so the hidden member must still be validated
+        sdist = self._tampered(tmp_path, "synapto-0.5.1/../../SECOND_ESCAPE", post_eof=True)
+
+        with pytest.raises(verifier.VerificationError, match="component"):
+            verifier._check_sdist(sdist)
+
+
+class TestWheelMemberTypeAcrossPlatforms:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_dos")
+
+    def _wheel(self, tmp_path, *, create_system, external_attr):
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                info = zipfile.ZipInfo(f"synapto/_migrations/{name}")
+                info.create_system = create_system
+                info.external_attr = external_attr
+                zf.writestr(info, (bundle / name).read_text(encoding="utf-8").encode())
+        return wheel
+
+    def test_a_dos_directory_attribute_is_rejected(self, verifier, tmp_path, capsys):
+        # the Unix-only check read the high bits and saw nothing, so a member
+        # flagged as a DOS directory passed the gate, uv install, and the probe
+        wheel = self._wheel(tmp_path, create_system=0, external_attr=0x10)
+
+        with pytest.raises(verifier.VerificationError, match="DOS directory"):
+            verifier._check_archive(wheel)
+
+        assert verifier.main(["verify_wheel.py", str(wheel)]) == 1
+        assert "Traceback" not in capsys.readouterr().err
+
+    def test_a_dos_volume_label_is_rejected(self, verifier, tmp_path):
+        wheel = self._wheel(tmp_path, create_system=0, external_attr=0x08)
+
+        with pytest.raises(verifier.VerificationError, match="volume label"):
+            verifier._check_archive(wheel)
+
+    def test_ordinary_dos_attributes_are_accepted(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path, create_system=0, external_attr=0x20))  # archive bit
+
+    def test_a_wheel_with_colliding_member_names_is_rejected(self, verifier, tmp_path):
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                zf.writestr(f"synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode())
+            zf.writestr("synapto/_migrations/001_INITIAL.SQL", MALICIOUS_SQL)
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_archive(wheel)
+
+
+class TestMalformedZipNames:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_unicode")
+
+    def _wheel_with_bad_name(self, tmp_path):
+        # a central-directory filename that is not valid UTF-8 while the UTF-8
+        # flag is set, which makes ZipFile raise during construction
+        wheel = _wheel_with_real_migrations(tmp_path)
+        raw = bytearray(wheel.read_bytes())
+        marker = b"synapto/_migrations/001_initial.sql"
+        while (index := raw.find(marker)) != -1:
+            raw[index : index + 7] = b"\xff\xfe\xfd\xfc\xfb\xfa\xf9"
+        broken = tmp_path / "broken" / "synapto-0.5.1-py3-none-any.whl"
+        broken.parent.mkdir(exist_ok=True)
+        broken.write_bytes(bytes(raw))
+        return broken
+
+    def test_a_malformed_name_is_reported_without_a_traceback(self, verifier, tmp_path, capsys):
+        broken = self._wheel_with_bad_name(tmp_path)
+
+        assert verifier.main(["verify_wheel.py", str(broken)]) == 1
+
+        captured = capsys.readouterr()
+        assert "FAILED" in captured.err
+        assert "Traceback" not in captured.err

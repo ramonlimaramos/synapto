@@ -72,7 +72,7 @@ def _check_archive(wheel: Path) -> None:
     # here, outside the read guard, and escaped main as a raw traceback
     try:
         archive = zipfile.ZipFile(wheel)
-    except (OSError, zipfile.BadZipFile) as exc:
+    except (OSError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
         raise VerificationError(f"cannot open {wheel.name} as a wheel archive: {exc}") from exc
 
     with archive:
@@ -83,6 +83,15 @@ def _check_archive(wheel: Path) -> None:
 
         if stray:
             raise VerificationError(f"wheel contains SQL outside {RESOURCE_PREFIX}: {stray}")
+
+        # the installed probe runs on one host and cannot prove how a
+        # case-insensitive or Windows filesystem would resolve these names
+        _reject_aliases(
+            [
+                (info.filename, _member_components(info.filename, is_dir=info.is_dir()), info.is_dir())
+                for info in archive.infolist()
+            ]
+        )
 
         expected = sorted(RESOURCE_PREFIX + name for name in EXPECTED_MIGRATIONS)
         if bundled != expected:
@@ -101,9 +110,7 @@ def _check_archive(wheel: Path) -> None:
             # uv's probe, because uv materializes it as a regular file — another
             # installer may follow the link instead. Entries without mode
             # metadata (the normal case) are left alone.
-            file_type = (info.external_attr >> 16) & 0o170000
-            if file_type and file_type != stat.S_IFREG:
-                raise VerificationError(f"wheel member {member} is not a regular file (type {file_type:o})")
+            _assert_regular_zip_member(info)
 
             try:
                 raw = archive.read(member)
@@ -113,6 +120,7 @@ def _check_archive(wheel: Path) -> None:
                 RuntimeError,
                 NotImplementedError,
                 EOFError,
+                UnicodeDecodeError,
                 zlib.error,
                 lzma.LZMAError,
                 zipfile.BadZipFile,
@@ -132,28 +140,72 @@ def _check_archive(wheel: Path) -> None:
 # rather than trusted to the extractor.
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
+# Extensions that some consumer could treat as SQL. Stray detection is
+# case-insensitive; the four canonical members still require exact casing.
+_SQL_SUFFIXES = (".sql",)
 
-def _validate_member_name(name: str, root: str) -> None:
-    """Reject any archive path that is unsafe on *any* platform.
 
-    Parsed as a raw archive path, never normalized first: ``pathlib`` quietly
-    drops ``.`` components, so ``./src/...`` looked canonical and a member named
-    ``<root>/../../escape.txt`` looked contained. A published sdist is unpacked
-    on machines whose path semantics differ from this one, so the check cannot
-    delegate to the host's.
+def _portable_key(components: list[str]) -> tuple[str, ...]:
+    """Collapse a path to the identity a permissive filesystem would give it.
+
+    Two archive members that differ only by case, or only by Windows' habit of
+    discarding trailing dots and spaces, land on the same file when extracted.
+    The gate hashes one of them and the extractor keeps the other, so they must
+    be treated as the same name here.
+    """
+    return tuple(part.rstrip(". ").casefold() for part in components)
+
+
+def _member_components(name: str, *, is_dir: bool) -> list[str]:
+    """Split a raw archive name into components, rejecting anything unsafe.
+
+    The raw name is never stripped first. ``rstrip("/")`` used to run before
+    validation, which turned a *regular file* named ``.../001_initial.sql/``
+    into a look-alike of the canonical path: the gate skipped it, and extraction
+    dropped the trailing slash and overwrote the real migration with its bytes.
     """
     if not name or "\x00" in name:
-        raise VerificationError(f"sdist member name {name!r} is empty or contains NUL")
+        raise VerificationError(f"archive member name {name!r} is empty or contains NUL")
     if name.startswith("/") or _WINDOWS_DRIVE.match(name) or name.startswith("\\\\"):
-        raise VerificationError(f"sdist member {name!r} is an absolute path")
+        raise VerificationError(f"archive member {name!r} is an absolute path")
     if "\\" in name:
-        raise VerificationError(f"sdist member {name!r} contains a backslash")
+        raise VerificationError(f"archive member {name!r} contains a backslash")
+    if ":" in name:
+        raise VerificationError(f"archive member {name!r} contains a colon")
 
-    components = name.rstrip("/").split("/")
+    components = name.split("/")
+    # a directory entry is the only member allowed to end in a separator
+    if is_dir and components and components[-1] == "":
+        components = components[:-1]
+
     if any(part in ("", ".", "..") for part in components):
-        raise VerificationError(f"sdist member {name!r} has an empty, '.' or '..' component")
-    if components[0] != root:
-        raise VerificationError(f"sdist member {name!r} is outside the expected root {root!r}")
+        raise VerificationError(f"archive member {name!r} has an empty, '.' or '..' component")
+    return components
+
+
+def _reject_aliases(entries: list[tuple[str, list[str], bool]]) -> None:
+    """Reject members that would collide once extracted.
+
+    ``entries`` is (raw name, components, is_dir). Collisions are decided on the
+    portable key, not the raw name, and a regular file that is also a prefix of
+    another member's path is rejected because one of them cannot survive.
+    """
+    seen: dict[tuple[str, ...], str] = {}
+    file_keys: set[tuple[str, ...]] = set()
+
+    for name, components, is_dir in entries:
+        key = _portable_key(components)
+        if key in seen:
+            raise VerificationError(f"archive members {seen[key]!r} and {name!r} collide when extracted")
+        seen[key] = name
+        if not is_dir:
+            file_keys.add(key)
+
+    for key, name in seen.items():
+        for length in range(1, len(key)):
+            if key[:length] in file_keys:
+                owner = seen[key[:length]]
+                raise VerificationError(f"archive member {owner!r} is a regular file and a parent of {name!r}")
 
 
 def _sdist_root(sdist: Path) -> str:
@@ -186,6 +238,28 @@ def _assert_gzip_intact(sdist: Path) -> None:
         raise VerificationError(f"{sdist.name} is not a complete gzip archive: {exc}") from exc
 
 
+def _assert_regular_zip_member(info: zipfile.ZipInfo) -> None:
+    """Reject a ZIP member that is not unambiguously a regular file.
+
+    Reading only the Unix high mode bits was not enough: an entry written with
+    ``create_system = 0`` and ``external_attr = 0x10`` carries the DOS directory
+    bit, passes a Unix-only check, and is not a regular file to every ZIP
+    consumer. Which half of ``external_attr`` is meaningful depends on
+    ``create_system``, so that is what decides how it is read.
+    """
+    if info.create_system == 0:  # DOS/Windows attributes live in the low byte
+        dos_attributes = info.external_attr & 0xFF
+        if dos_attributes & 0x10:
+            raise VerificationError(f"wheel member {info.filename} is marked as a DOS directory")
+        if dos_attributes & 0x08:
+            raise VerificationError(f"wheel member {info.filename} is marked as a DOS volume label")
+        return
+
+    file_type = (info.external_attr >> 16) & 0o170000
+    if file_type and file_type != stat.S_IFREG:
+        raise VerificationError(f"wheel member {info.filename} is not a regular file (type {file_type:o})")
+
+
 def _check_sdist(sdist: Path) -> None:
     """Assert the source distribution carries exactly the four canonical migrations.
 
@@ -205,22 +279,27 @@ def _check_sdist(sdist: Path) -> None:
     expected_paths = [f"{root}/src/synapto/_migrations/{name}" for name in EXPECTED_MIGRATIONS]
 
     try:
-        with tarfile.open(sdist, "r:gz") as archive:
+        # ignore_zeros so a second TAR segment hidden after the logical
+        # terminator is seen and validated, instead of silently skipped
+        with tarfile.open(sdist, "r:gz", ignore_zeros=True) as archive:
             infos = archive.getmembers()
 
             # every member, not just the SQL ones: a traversal escape hidden in a
             # text file is still an escape
-            seen: set[str] = set()
+            entries = []
             for info in infos:
-                _validate_member_name(info.name, root)
-                if info.name in seen:
-                    raise VerificationError(f"sdist contains duplicate member {info.name!r}")
-                seen.add(info.name)
                 if not (info.isfile() or info.isdir()):
                     raise VerificationError(f"sdist member {info.name!r} is not a regular file or directory")
+                components = _member_components(info.name, is_dir=info.isdir())
+                if components[0] != root:
+                    raise VerificationError(f"sdist member {info.name!r} is outside the expected root {root!r}")
+                entries.append((info.name, components, info.isdir()))
 
-            # a list, not a set: a duplicate must not collapse away
-            sql_members = [info for info in infos if info.name.endswith(".sql")]
+            _reject_aliases(entries)
+
+            # case-insensitive for stray detection, exact casing for the canonical
+            # four: a `.SQL` twin is still SQL to a case-insensitive filesystem
+            sql_members = [info for info in infos if info.name.casefold().endswith(_SQL_SUFFIXES) and info.isfile()]
             found_paths = sorted(info.name for info in sql_members)
             if found_paths != sorted(expected_paths):
                 raise VerificationError(f"sdist SQL members are {found_paths}, expected {sorted(expected_paths)}")
