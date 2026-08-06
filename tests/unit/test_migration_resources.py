@@ -866,7 +866,7 @@ class TestSdistIsGated:
         broken = tmp_path / "synapto-0.5.1.tar.gz"
         broken.write_text("not a tarball")
 
-        with pytest.raises(verifier.VerificationError, match="cannot read"):
+        with pytest.raises(verifier.VerificationError, match="gzip"):
             verifier._check_sdist(broken)
 
 
@@ -973,7 +973,7 @@ class TestSdistGateIsExact:
         members = _canonical_members()
         members.append(("other-root/README.md", b"decoy", "file"))
 
-        with pytest.raises(verifier.VerificationError, match="top-level"):
+        with pytest.raises(verifier.VerificationError, match="outside"):
             verifier._check_sdist(_sdist_with(tmp_path, members))
 
     def test_a_broken_sdist_returns_one_through_main_without_a_traceback(self, verifier, tmp_path, capsys):
@@ -1030,3 +1030,171 @@ class TestWheelMemberMetadata:
         wheel = _wheel_with_real_migrations(tmp_path)
 
         verifier._check_archive(wheel)  # must not raise
+
+
+def _load_verifier(alias):
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "verify_wheel.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestSdistMemberPathsArePortable:
+    """Every member is validated as a raw archive path, on every platform.
+
+    Checking only the SQL members with `pathlib` left two holes: `pathlib`
+    normalizes `.` away, so `./src/...` looked canonical, and a non-SQL member
+    named `<root>/../../escape.txt` was never inspected at all. A published
+    sdist is unpacked on machines whose path rules differ from the verifier's.
+    """
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_paths")
+
+    def test_the_canonical_sdist_passes(self, verifier, tmp_path):
+        verifier._check_sdist(_sdist_with(tmp_path, _canonical_members()))  # must not raise
+
+    def test_a_dot_root_is_rejected(self, verifier, tmp_path):
+        members = [(name.replace("synapto-0.5.1/", "./"), body, kind) for name, body, kind in _canonical_members()]
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_non_sql_traversal_member_is_rejected(self, verifier, tmp_path):
+        # the escape hid in a text file, which the SQL-only check never saw
+        members = _canonical_members() + [("synapto-0.5.1/../../escape.txt", b"x", "file")]
+
+        with pytest.raises(verifier.VerificationError, match="component"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_an_absolute_path_member_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members() + [("/etc/passwd", b"x", "file")]
+
+        with pytest.raises(verifier.VerificationError, match="absolute"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    @pytest.mark.parametrize("name", ["C:/evil.txt", "\\\\server\\share\\evil.txt"])
+    def test_windows_style_paths_are_rejected(self, verifier, tmp_path, name):
+        # meaningless on this host, meaningful to whoever unpacks on Windows
+        members = _canonical_members() + [(name, b"x", "file")]
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_backslash_member_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members() + [("synapto-0.5.1\\evil.txt", b"x", "file")]
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_duplicate_non_sql_member_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members() + [
+            ("synapto-0.5.1/README.md", b"first", "file"),
+            ("synapto-0.5.1/README.md", b"second", "file"),
+        ]
+
+        with pytest.raises(verifier.VerificationError, match="duplicate"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_a_non_sql_symlink_is_rejected(self, verifier, tmp_path):
+        members = _canonical_members() + [("synapto-0.5.1/link.txt", b"", "symlink")]
+
+        with pytest.raises(verifier.VerificationError, match="regular file"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+    def test_the_root_comes_from_the_filename_not_the_members(self, verifier, tmp_path):
+        # a malicious archive controls its member names but not the artifact
+        # we were asked to verify
+        members = [
+            (name.replace("synapto-0.5.1/", "attacker-root/"), body, kind) for name, body, kind in _canonical_members()
+        ]
+
+        with pytest.raises(verifier.VerificationError, match="outside"):
+            verifier._check_sdist(_sdist_with(tmp_path, members))
+
+
+class TestGzipIsConsumedToEof:
+    """tarfile stops at the TAR terminator and never reads the gzip footer."""
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_gzip")
+
+    def _valid_sdist(self, tmp_path):
+        return _sdist_with(tmp_path, _canonical_members())
+
+    def test_a_truncated_trailer_is_rejected(self, verifier, tmp_path):
+        # removing the final eight bytes leaves a structurally readable tar whose
+        # CRC/ISIZE are gone; gzip -t rejects it and so must we
+        sdist = self._valid_sdist(tmp_path)
+        truncated = tmp_path / "truncated" / "synapto-0.5.1.tar.gz"
+        truncated.parent.mkdir()
+        truncated.write_bytes(sdist.read_bytes()[:-8])
+
+        with pytest.raises(verifier.VerificationError, match="complete gzip"):
+            verifier._check_sdist(truncated)
+
+    def test_a_flipped_crc_byte_is_rejected(self, verifier, tmp_path):
+        sdist = self._valid_sdist(tmp_path)
+        corrupt = tmp_path / "corrupt" / "synapto-0.5.1.tar.gz"
+        corrupt.parent.mkdir()
+        raw = bytearray(sdist.read_bytes())
+        raw[-8] ^= 0xFF
+        corrupt.write_bytes(bytes(raw))
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(corrupt)
+
+    def test_main_returns_one_without_a_traceback(self, verifier, tmp_path, capsys):
+        wheel = _wheel_with_real_migrations(tmp_path)
+        sdist = self._valid_sdist(tmp_path)
+        truncated = tmp_path / "broken" / "synapto-0.5.1.tar.gz"
+        truncated.parent.mkdir()
+        truncated.write_bytes(sdist.read_bytes()[:-8])
+
+        assert verifier.main(["verify_wheel.py", str(wheel), str(truncated)]) == 1
+
+        captured = capsys.readouterr()
+        assert "FAILED" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_an_unrecognized_sdist_filename_is_rejected(self, verifier, tmp_path):
+        odd = tmp_path / "not-an-sdist.zip"
+        odd.write_bytes(b"x")
+
+        with pytest.raises(verifier.VerificationError, match="not a recognized"):
+            verifier._check_sdist(odd)
+
+
+class TestCorruptCompressedWheelMember:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_deflate")
+
+    def test_a_corrupted_deflate_member_is_reported(self, verifier, tmp_path, capsys):
+        # zlib.error was outside the guard, so the CLI emitted a raw traceback
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in EXPECTED:
+                zf.writestr(f"synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode())
+
+        with zipfile.ZipFile(wheel) as zf:
+            info = zf.getinfo("synapto/_migrations/001_initial.sql")
+            offset = info.header_offset + 30 + len(info.filename) + len(info.extra)
+        raw = bytearray(wheel.read_bytes())
+        for index in range(offset + 4, offset + 12):
+            raw[index] ^= 0xFF
+        wheel.write_bytes(bytes(raw))
+
+        with pytest.raises(verifier.VerificationError, match="cannot read"):
+            verifier._check_archive(wheel)
+
+        assert verifier.main(["verify_wheel.py", str(wheel)]) == 1
+        assert "Traceback" not in capsys.readouterr().err

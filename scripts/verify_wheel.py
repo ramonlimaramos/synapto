@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import lzma
+import re
 import shutil
 import stat
 import subprocess
@@ -29,6 +31,7 @@ import tarfile
 import tempfile
 import venv
 import zipfile
+import zlib
 from pathlib import Path
 
 # The exact bundle v0.5.1 must ship. 005/006 belong to the unreleased v0.6 line
@@ -104,7 +107,16 @@ def _check_archive(wheel: Path) -> None:
 
             try:
                 raw = archive.read(member)
-            except (KeyError, OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
+            except (
+                KeyError,
+                OSError,
+                RuntimeError,
+                NotImplementedError,
+                EOFError,
+                zlib.error,
+                lzma.LZMAError,
+                zipfile.BadZipFile,
+            ) as exc:
                 raise VerificationError(f"cannot read {member} from the wheel: {exc}") from exc
 
             digest = hashlib.sha256(raw).hexdigest()[:16]
@@ -115,16 +127,63 @@ def _check_archive(wheel: Path) -> None:
     print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
 
 
-def _sdist_root(members: list) -> str:
-    """Return the single top-level directory every member must live under.
+# Windows drive letters and UNC prefixes are meaningless on this host but
+# meaningful to whoever unpacks the sdist on Windows, so they are rejected here
+# rather than trusted to the extractor.
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
-    A source distribution is one rooted tree. Accepting several roots would let
-    a decoy sit beside the real package, so anything else is a rejection.
+
+def _validate_member_name(name: str, root: str) -> None:
+    """Reject any archive path that is unsafe on *any* platform.
+
+    Parsed as a raw archive path, never normalized first: ``pathlib`` quietly
+    drops ``.`` components, so ``./src/...`` looked canonical and a member named
+    ``<root>/../../escape.txt`` looked contained. A published sdist is unpacked
+    on machines whose path semantics differ from this one, so the check cannot
+    delegate to the host's.
     """
-    roots = {name.split("/", 1)[0] for name in members if name}
-    if len(roots) != 1:
-        raise VerificationError(f"sdist must have exactly one top-level directory, found {sorted(roots)}")
-    return roots.pop()
+    if not name or "\x00" in name:
+        raise VerificationError(f"sdist member name {name!r} is empty or contains NUL")
+    if name.startswith("/") or _WINDOWS_DRIVE.match(name) or name.startswith("\\\\"):
+        raise VerificationError(f"sdist member {name!r} is an absolute path")
+    if "\\" in name:
+        raise VerificationError(f"sdist member {name!r} contains a backslash")
+
+    components = name.rstrip("/").split("/")
+    if any(part in ("", ".", "..") for part in components):
+        raise VerificationError(f"sdist member {name!r} has an empty, '.' or '..' component")
+    if components[0] != root:
+        raise VerificationError(f"sdist member {name!r} is outside the expected root {root!r}")
+
+
+def _sdist_root(sdist: Path) -> str:
+    """Derive the required root from the artifact filename.
+
+    Taken from the filename rather than inferred from the members, because a
+    malicious archive controls its own member names but not what we asked to
+    verify.
+    """
+    stem = sdist.name
+    for suffix in (".tar.gz", ".tgz"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    raise VerificationError(f"{sdist.name} is not a recognized source distribution filename")
+
+
+def _assert_gzip_intact(sdist: Path) -> None:
+    """Decompress the whole payload so the gzip trailer is actually checked.
+
+    ``tarfile`` stops at the TAR terminator and never reads the gzip footer, so
+    an sdist with its final eight bytes removed — which ``gzip -t`` and
+    ``gzip.open().read()`` both reject — passed every check and exited 0.
+    Streamed in fixed-size chunks: constant memory, one extra linear pass.
+    """
+    try:
+        with gzip.open(sdist, "rb") as stream:
+            while stream.read(1 << 16):
+                pass
+    except (OSError, EOFError, zlib.error, gzip.BadGzipFile) as exc:
+        raise VerificationError(f"{sdist.name} is not a complete gzip archive: {exc}") from exc
 
 
 def _check_sdist(sdist: Path) -> None:
@@ -135,51 +194,52 @@ def _check_sdist(sdist: Path) -> None:
     a downstream build compiles from, so an sdist missing or duplicating its
     migrations reproduces the original defect through another door.
 
-    Membership is decided by exact path equality, not by containment: a
-    substring test accepted the four files under ``not-package/``, accepted a
-    fifth duplicate beside the canonical four, and accepted ``..`` traversal.
+    Membership is decided by exact path equality, not containment: a substring
+    test accepted the four files under ``not-package/``, accepted a fifth
+    duplicate beside the canonical four, and accepted ``..`` traversal.
     """
-    expected_paths = None
+    # filename first: it is a constant-time check, and decompressing the whole
+    # payload to then reject the name would be wasted work
+    root = _sdist_root(sdist)
+    _assert_gzip_intact(sdist)
+    expected_paths = [f"{root}/src/synapto/_migrations/{name}" for name in EXPECTED_MIGRATIONS]
+
     try:
         with tarfile.open(sdist, "r:gz") as archive:
             infos = archive.getmembers()
-            root = _sdist_root([info.name for info in infos])
-            expected_paths = [f"{root}/src/synapto/_migrations/{name}" for name in EXPECTED_MIGRATIONS]
 
-            # a list, not a set: a duplicate member must not collapse away
+            # every member, not just the SQL ones: a traversal escape hidden in a
+            # text file is still an escape
+            seen: set[str] = set()
+            for info in infos:
+                _validate_member_name(info.name, root)
+                if info.name in seen:
+                    raise VerificationError(f"sdist contains duplicate member {info.name!r}")
+                seen.add(info.name)
+                if not (info.isfile() or info.isdir()):
+                    raise VerificationError(f"sdist member {info.name!r} is not a regular file or directory")
+
+            # a list, not a set: a duplicate must not collapse away
             sql_members = [info for info in infos if info.name.endswith(".sql")]
-            found_paths = [info.name for info in sql_members]
-
-            for name in found_paths:
-                parts = Path(name).parts
-                if name.startswith("/") or ".." in parts or "." in parts:
-                    raise VerificationError(f"sdist member {name!r} has an unsafe path")
-
-            if sorted(found_paths) != sorted(expected_paths) or len(found_paths) != len(expected_paths):
-                raise VerificationError(
-                    f"sdist SQL members are {sorted(found_paths)}, expected {sorted(expected_paths)}"
-                )
+            found_paths = sorted(info.name for info in sql_members)
+            if found_paths != sorted(expected_paths):
+                raise VerificationError(f"sdist SQL members are {found_paths}, expected {sorted(expected_paths)}")
 
             found = {}
             for info in sql_members:
-                # regular files only: a symlink or hardlink could point anywhere,
-                # and extractfile returns None or raises for the other types
-                if not info.isfile():
-                    raise VerificationError(f"sdist member {info.name!r} is not a regular file")
-
                 handle = archive.extractfile(info)
                 if handle is None:
                     raise VerificationError(f"cannot read {info.name} from the sdist")
                 found[info.name.rsplit("/", 1)[-1]] = hashlib.sha256(handle.read()).hexdigest()[:16]
     except VerificationError:
         raise
-    except (OSError, KeyError, EOFError, gzip.BadGzipFile, tarfile.TarError) as exc:
+    except (OSError, KeyError, EOFError, zlib.error, gzip.BadGzipFile, tarfile.TarError) as exc:
         raise VerificationError(f"cannot read {sdist.name} as a source distribution: {exc}") from exc
 
     if found != EXPECTED_MIGRATIONS:
         raise VerificationError(f"sdist migrations are {found}, expected {EXPECTED_MIGRATIONS}")
 
-    print(f"sdist: {len(found)} migrations bundled at {root}/src/synapto/_migrations/, checksums match")
+    print(f"sdist: {len(found)} migrations bundled at {root}/src/synapto/_migrations/, gzip and checksums intact")
 
 
 def _create_environment(env_dir: Path) -> Path:
