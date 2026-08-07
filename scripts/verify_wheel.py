@@ -66,6 +66,40 @@ class VerificationError(RuntimeError):
     """A wheel failed one of the artifact guarantees."""
 
 
+_ZIP_READ_ERRORS = (
+    KeyError,
+    OSError,
+    RuntimeError,
+    NotImplementedError,
+    EOFError,
+    UnicodeDecodeError,
+    zlib.error,
+    lzma.LZMAError,
+    zipfile.BadZipFile,
+)
+
+
+def _stream_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> None:
+    """Read a member to EOF so the archive has to prove it can produce it.
+
+    Opening every member — not only the four canonical ones — is what catches a
+    central-directory entry whose *local* header names something else. A wheel
+    carrying a benign-looking `000_payload.bin` in the central directory and
+    `001_initial.sql` in its local header passed the old gate untouched, and
+    bsdtar happily extracted it over the verified migration. zipfile raises
+    BadZipFile on that mismatch, but only when the member is actually opened.
+
+    Streamed in fixed chunks so an arbitrarily large member cannot be pulled
+    into memory.
+    """
+    try:
+        with archive.open(info) as handle:
+            while handle.read(1 << 16):
+                pass
+    except _ZIP_READ_ERRORS as exc:
+        raise VerificationError(f"cannot read {info.filename} from the wheel: {exc}") from exc
+
+
 def _check_archive(wheel: Path) -> None:
     """Assert the archive carries exactly the expected migration resources."""
     # opening is guarded too: a truncated or non-ZIP file raised BadZipFile
@@ -76,55 +110,45 @@ def _check_archive(wheel: Path) -> None:
         raise VerificationError(f"cannot open {wheel.name} as a wheel archive: {exc}") from exc
 
     with archive:
-        names = archive.namelist()
-        sql_members = sorted(n for n in names if n.endswith(".sql"))
-        bundled = sorted(n for n in sql_members if n.startswith(RESOURCE_PREFIX))
-        stray = sorted(set(sql_members) - set(bundled))
-
-        if stray:
-            raise VerificationError(f"wheel contains SQL outside {RESOURCE_PREFIX}: {stray}")
+        try:
+            infos = archive.infolist()
+        except _ZIP_READ_ERRORS as exc:
+            raise VerificationError(f"cannot list {wheel.name}: {exc}") from exc
 
         # the installed probe runs on one host and cannot prove how a
         # case-insensitive or Windows filesystem would resolve these names
         _reject_aliases(
-            [
-                (info.filename, _member_components(info.filename, is_dir=info.is_dir()), info.is_dir())
-                for info in archive.infolist()
-            ]
+            [(info.filename, _member_components(info.filename, is_dir=info.is_dir()), info.is_dir()) for info in infos]
         )
+
+        # case-insensitive: a `.SQL` twin is still SQL to a case-insensitive
+        # filesystem, and the wheel path used to compare case-sensitively
+        sql_members = sorted(info.filename for info in infos if info.filename.casefold().endswith(_SQL_SUFFIXES))
+        bundled = sorted(name for name in sql_members if name.startswith(RESOURCE_PREFIX))
+        stray = sorted(set(sql_members) - set(bundled))
+        if stray:
+            raise VerificationError(f"wheel contains SQL outside {RESOURCE_PREFIX}: {stray}")
 
         expected = sorted(RESOURCE_PREFIX + name for name in EXPECTED_MIGRATIONS)
         if bundled != expected:
             raise VerificationError(f"wheel migration members are {bundled}, expected {expected}")
 
+        for info in infos:
+            if info.is_dir():
+                continue
+            if info.filename in expected:
+                _assert_regular_zip_member(info)
+            _stream_member(archive, info)
+
         # names alone would accept a wheel carrying arbitrary SQL under the right
         # filenames; the checksum is the migration's identity in the tracking
-        # table, so the bytes are what must match
-        # Hashed straight from the archive: decoding and re-encoding first would
-        # have verified a UTF-8 round-trip rather than what the wheel actually
-        # contains, and invalid bytes escaped as an uncaught UnicodeDecodeError.
+        # table, so the bytes are what must match. Hashed straight from the
+        # archive: decoding and re-encoding first would verify a UTF-8 round trip
+        # rather than what the wheel actually contains.
         for member in bundled:
-            info = archive.getinfo(member)
-            # A ZIP entry can declare Unix mode bits. An entry flagged as a
-            # symlink may still carry the right bytes and pass both the hash and
-            # uv's probe, because uv materializes it as a regular file — another
-            # installer may follow the link instead. Entries without mode
-            # metadata (the normal case) are left alone.
-            _assert_regular_zip_member(info)
-
             try:
                 raw = archive.read(member)
-            except (
-                KeyError,
-                OSError,
-                RuntimeError,
-                NotImplementedError,
-                EOFError,
-                UnicodeDecodeError,
-                zlib.error,
-                lzma.LZMAError,
-                zipfile.BadZipFile,
-            ) as exc:
+            except _ZIP_READ_ERRORS as exc:
                 raise VerificationError(f"cannot read {member} from the wheel: {exc}") from exc
 
             digest = hashlib.sha256(raw).hexdigest()[:16]
@@ -132,7 +156,7 @@ def _check_archive(wheel: Path) -> None:
             if digest != EXPECTED_MIGRATIONS[name]:
                 raise VerificationError(f"{member} has checksum {digest}, expected {EXPECTED_MIGRATIONS[name]}")
 
-    print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, checksums match")
+    print(f"archive: {len(bundled)} migrations bundled under {RESOURCE_PREFIX}, every member readable, checksums match")
 
 
 # Windows drive letters and UNC prefixes are meaningless on this host but
@@ -140,9 +164,25 @@ def _check_archive(wheel: Path) -> None:
 # rather than trusted to the extractor.
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
-# Extensions that some consumer could treat as SQL. Stray detection is
+# Extensions some consumer could treat as SQL. Stray detection is
 # case-insensitive; the four canonical members still require exact casing.
 _SQL_SUFFIXES = (".sql",)
+
+# Characters Windows forbids outright. A name carrying one cannot be extracted
+# there faithfully, so accepting it means the verified identity and the
+# extracted identity may differ.
+_WINDOWS_FORBIDDEN = set('<>:"|?*') | {chr(code) for code in range(0x20)}
+
+# Reserved device names. Windows resolves them regardless of extension, so
+# CON.txt is the console, not a file.
+_WINDOWS_DEVICES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"}
+    | {f"COM{digit}" for digit in "0123456789"}
+    | {f"LPT{digit}" for digit in "0123456789"}
+    # documented superscript variants of COM/LPT
+    | {f"COM{sup}" for sup in "¹²³"}
+    | {f"LPT{sup}" for sup in "¹²³"}
+)
 
 
 def _portable_key(components: list[str]) -> tuple[str, ...]:
@@ -157,12 +197,17 @@ def _portable_key(components: list[str]) -> tuple[str, ...]:
 
 
 def _member_components(name: str, *, is_dir: bool) -> list[str]:
-    """Split a raw archive name into components, rejecting anything unsafe.
+    """Split a raw archive name into components, rejecting anything unportable.
 
-    The raw name is never stripped first. ``rstrip("/")`` used to run before
+    The raw name is never normalized first. ``rstrip("/")`` used to run before
     validation, which turned a *regular file* named ``.../001_initial.sql/``
     into a look-alike of the canonical path: the gate skipped it, and extraction
     dropped the trailing slash and overwrote the real migration with its bytes.
+
+    A non-portable spelling is rejected rather than normalized and accepted. A
+    unique member named ``005_malicious.sql.`` is not a duplicate of anything,
+    so a collision check cannot catch it — but Windows drops the trailing dot
+    and it becomes a fifth discoverable migration.
     """
     if not name or "\x00" in name:
         raise VerificationError(f"archive member name {name!r} is empty or contains NUL")
@@ -170,16 +215,31 @@ def _member_components(name: str, *, is_dir: bool) -> list[str]:
         raise VerificationError(f"archive member {name!r} is an absolute path")
     if "\\" in name:
         raise VerificationError(f"archive member {name!r} contains a backslash")
-    if ":" in name:
-        raise VerificationError(f"archive member {name!r} contains a colon")
 
     components = name.split("/")
     # a directory entry is the only member allowed to end in a separator
     if is_dir and components and components[-1] == "":
         components = components[:-1]
 
-    if any(part in ("", ".", "..") for part in components):
-        raise VerificationError(f"archive member {name!r} has an empty, '.' or '..' component")
+    for part in components:
+        if part in ("", ".", ".."):
+            raise VerificationError(f"archive member {name!r} has an empty, '.' or '..' component")
+
+        forbidden = sorted(_WINDOWS_FORBIDDEN & set(part))
+        if forbidden:
+            raise VerificationError(
+                f"archive member {name!r} contains characters that cannot be extracted portably: {forbidden!r}"
+            )
+
+        # covers "005_malicious.sql." and components made only of dots or spaces
+        if part.rstrip(" .") != part:
+            raise VerificationError(
+                f"archive member {name!r} has a component ending in a dot or space, which Windows silently removes"
+            )
+
+        if part.split(".", 1)[0].upper() in _WINDOWS_DEVICES:
+            raise VerificationError(f"archive member {name!r} names a reserved Windows device")
+
     return components
 
 
@@ -238,26 +298,73 @@ def _assert_gzip_intact(sdist: Path) -> None:
         raise VerificationError(f"{sdist.name} is not a complete gzip archive: {exc}") from exc
 
 
+# ZIP creator systems whose external_attr we know how to read.
+_DOS_CREATORS = (0, 10)  # MS-DOS/FAT and NTFS both use the DOS attribute byte
+_UNIX_CREATOR = 3
+
+_DOS_DIRECTORY = 0x10
+_DOS_VOLUME_LABEL = 0x08
+
+
 def _assert_regular_zip_member(info: zipfile.ZipInfo) -> None:
     """Reject a ZIP member that is not unambiguously a regular file.
 
-    Reading only the Unix high mode bits was not enough: an entry written with
-    ``create_system = 0`` and ``external_attr = 0x10`` carries the DOS directory
-    bit, passes a Unix-only check, and is not a regular file to every ZIP
-    consumer. Which half of ``external_attr`` is meaningful depends on
-    ``create_system``, so that is what decides how it is read.
+    Which half of ``external_attr`` carries meaning depends on
+    ``create_system``, and reading only the Unix high bits let a member written
+    with the DOS directory bit pass as a file. Both halves are now checked, and
+    an unrecognized creator system is refused rather than assumed to be Unix.
     """
-    if info.create_system == 0:  # DOS/Windows attributes live in the low byte
-        dos_attributes = info.external_attr & 0xFF
-        if dos_attributes & 0x10:
-            raise VerificationError(f"wheel member {info.filename} is marked as a DOS directory")
-        if dos_attributes & 0x08:
-            raise VerificationError(f"wheel member {info.filename} is marked as a DOS volume label")
+    dos_attributes = info.external_attr & 0xFF
+    if dos_attributes & _DOS_DIRECTORY:
+        raise VerificationError(f"wheel member {info.filename} is marked as a DOS directory")
+    if dos_attributes & _DOS_VOLUME_LABEL:
+        raise VerificationError(f"wheel member {info.filename} is marked as a DOS volume label")
+
+    if info.create_system == _UNIX_CREATOR:
+        file_type = (info.external_attr >> 16) & 0o170000
+        if file_type and file_type != stat.S_IFREG:
+            raise VerificationError(f"wheel member {info.filename} is not a regular file (type {file_type:o})")
         return
 
-    file_type = (info.external_attr >> 16) & 0o170000
-    if file_type and file_type != stat.S_IFREG:
-        raise VerificationError(f"wheel member {info.filename} is not a regular file (type {file_type:o})")
+    if info.create_system in _DOS_CREATORS:
+        return
+
+    raise VerificationError(
+        f"wheel member {info.filename} was created by an unsupported system "
+        f"({info.create_system}); its file type cannot be verified"
+    )
+
+
+def _assert_tar_terminator(sdist: Path, offset: int) -> None:
+    """Require two zero blocks at the TAR terminator and only padding after it.
+
+    ``ignore_zeros`` surfaced a second *valid* TAR header, but a concatenated
+    gzip member holding short opaque bytes was still skipped in silence. Reading
+    the tail explicitly is the only way to say the archive ends where it claims.
+    """
+    try:
+        with gzip.open(sdist, "rb") as stream:
+            remaining = offset
+            while remaining:
+                chunk = stream.read(min(remaining, 1 << 16))
+                if not chunk:
+                    raise VerificationError(f"{sdist.name} ends before its TAR terminator")
+                remaining -= len(chunk)
+
+            terminator = stream.read(1024)
+            if len(terminator) < 1024 or any(terminator):
+                raise VerificationError(f"{sdist.name} lacks two complete zero blocks at the TAR terminator")
+
+            while True:
+                trailing = stream.read(1 << 16)
+                if not trailing:
+                    break
+                if any(trailing):
+                    raise VerificationError(f"{sdist.name} carries non-zero data after the TAR terminator")
+    except VerificationError:
+        raise
+    except (OSError, EOFError, zlib.error, gzip.BadGzipFile) as exc:
+        raise VerificationError(f"cannot read the tail of {sdist.name}: {exc}") from exc
 
 
 def _check_sdist(sdist: Path) -> None:
@@ -279,10 +386,10 @@ def _check_sdist(sdist: Path) -> None:
     expected_paths = [f"{root}/src/synapto/_migrations/{name}" for name in EXPECTED_MIGRATIONS]
 
     try:
-        # ignore_zeros so a second TAR segment hidden after the logical
-        # terminator is seen and validated, instead of silently skipped
-        with tarfile.open(sdist, "r:gz", ignore_zeros=True) as archive:
+        with tarfile.open(sdist, "r:gz") as archive:
             infos = archive.getmembers()
+            # where the parser stopped: everything from here on must be padding
+            terminator_offset = archive.offset
 
             # every member, not just the SQL ones: a traversal escape hidden in a
             # text file is still an escape
@@ -318,7 +425,9 @@ def _check_sdist(sdist: Path) -> None:
     if found != EXPECTED_MIGRATIONS:
         raise VerificationError(f"sdist migrations are {found}, expected {EXPECTED_MIGRATIONS}")
 
-    print(f"sdist: {len(found)} migrations bundled at {root}/src/synapto/_migrations/, gzip and checksums intact")
+    _assert_tar_terminator(sdist, terminator_offset)
+
+    print(f"sdist: {len(found)} migrations bundled at {root}/src/synapto/_migrations/, gzip and terminator intact")
 
 
 def _create_environment(env_dir: Path) -> Path:

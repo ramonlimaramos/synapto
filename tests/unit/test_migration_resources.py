@@ -8,6 +8,7 @@ against an installed distribution. Everything below runs without a database.
 
 from __future__ import annotations
 
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -1265,7 +1266,7 @@ class TestExtractionAliasesAreRejected:
         # behavior does not, so the hidden member must still be validated
         sdist = self._tampered(tmp_path, "synapto-0.5.1/../../SECOND_ESCAPE", post_eof=True)
 
-        with pytest.raises(verifier.VerificationError, match="component"):
+        with pytest.raises(verifier.VerificationError):
             verifier._check_sdist(sdist)
 
 
@@ -1322,29 +1323,269 @@ class TestWheelMemberTypeAcrossPlatforms:
             verifier._check_archive(wheel)
 
 
+def _flag_utf8_and_corrupt(wheel: Path, target: bytes, *, local: bool) -> Path:
+    """Set the UTF-8 flag on one header, then corrupt only that header's name.
+
+    The previous helper replaced filename bytes without touching the
+    general-purpose flag. The original wheel has ``flag_bits == 0``, so zipfile
+    decoded the bytes as CP437 and never raised — the test passed only because
+    the expected member had vanished, and would have passed without the
+    UnicodeDecodeError handling it claimed to cover.
+    """
+    import struct
+
+    raw = bytearray(wheel.read_bytes())
+    signature = b"PK\x03\x04" if local else b"PK\x01\x02"
+    name_offset = 30 if local else 46
+    flag_offset = 6 if local else 8
+
+    index = raw.find(signature)
+    while index != -1:
+        length = struct.unpack_from("<H", raw, index + (26 if local else 28))[0]
+        start = index + name_offset
+        if bytes(raw[start : start + length]) == target:
+            flags = struct.unpack_from("<H", raw, index + flag_offset)[0]
+            struct.pack_into("<H", raw, index + flag_offset, flags | 0x800)
+            raw[start : start + 4] = b"\xff\xfe\xfd\xfc"
+            break
+        index = raw.find(signature, index + 1)
+    else:
+        raise AssertionError(f"header for {target!r} not found")
+
+    broken = wheel.parent / ("local" if local else "central") / wheel.name
+    broken.parent.mkdir(exist_ok=True)
+    broken.write_bytes(bytes(raw))
+    return broken
+
+
 class TestMalformedZipNames:
+    """Both header boundaries must fail closed, and for the right reason."""
+
     @pytest.fixture
     def verifier(self):
         return _load_verifier("verify_wheel_unicode")
 
-    def _wheel_with_bad_name(self, tmp_path):
-        # a central-directory filename that is not valid UTF-8 while the UTF-8
-        # flag is set, which makes ZipFile raise during construction
+    def test_a_malformed_central_name_is_reported_without_a_traceback(self, verifier, tmp_path, capsys):
         wheel = _wheel_with_real_migrations(tmp_path)
-        raw = bytearray(wheel.read_bytes())
-        marker = b"synapto/_migrations/001_initial.sql"
-        while (index := raw.find(marker)) != -1:
-            raw[index : index + 7] = b"\xff\xfe\xfd\xfc\xfb\xfa\xf9"
-        broken = tmp_path / "broken" / "synapto-0.5.1-py3-none-any.whl"
-        broken.parent.mkdir(exist_ok=True)
-        broken.write_bytes(bytes(raw))
-        return broken
+        broken = _flag_utf8_and_corrupt(wheel, b"synapto/_migrations/001_initial.sql", local=False)
 
-    def test_a_malformed_name_is_reported_without_a_traceback(self, verifier, tmp_path, capsys):
-        broken = self._wheel_with_bad_name(tmp_path)
+        # the raw operation must be what raises, or the test proves nothing
+        with pytest.raises(UnicodeDecodeError):
+            zipfile.ZipFile(broken)
 
         assert verifier.main(["verify_wheel.py", str(broken)]) == 1
-
         captured = capsys.readouterr()
         assert "FAILED" in captured.err
         assert "Traceback" not in captured.err
+
+    def test_a_malformed_local_name_is_reported_without_a_traceback(self, verifier, tmp_path, capsys):
+        wheel = _wheel_with_real_migrations(tmp_path)
+        broken = _flag_utf8_and_corrupt(wheel, b"synapto/_migrations/001_initial.sql", local=True)
+
+        assert verifier.main(["verify_wheel.py", str(broken)]) == 1
+        captured = capsys.readouterr()
+        assert "FAILED" in captured.err
+        assert "Traceback" not in captured.err
+
+
+class TestWindowsNormalizedNamesAreRejected:
+    """A unique name is not a collision, so only rejection catches it.
+
+    `005_malicious.sql.` collides with nothing, but Windows drops the trailing
+    dot and it becomes a fifth discoverable migration. Normalizing and then
+    accepting would have hidden it.
+    """
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_windows")
+
+    def _sdist_plus(self, tmp_path, extra_name):
+        import io
+        import tarfile
+
+        path = tmp_path / "synapto-0.5.1.tar.gz"
+        path.unlink(missing_ok=True)
+        with tarfile.open(path, "w:gz") as tar:
+            for name, body, _kind in _canonical_members() + [(extra_name, MALICIOUS_SQL, "file")]:
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+        return path
+
+    def _wheel_plus(self, tmp_path, extra_name):
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                zf.writestr(f"synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode())
+            zf.writestr(extra_name, MALICIOUS_SQL)
+        return wheel
+
+    @pytest.mark.parametrize(
+        "suffix", ["005_malicious.sql.", "005_malicious.sql "], ids=["trailing_dot", "trailing_space"]
+    )
+    def test_a_windows_normalized_sdist_member_is_rejected(self, verifier, tmp_path, suffix):
+        with pytest.raises(verifier.VerificationError, match="dot or space"):
+            verifier._check_sdist(self._sdist_plus(tmp_path, f"synapto-0.5.1/src/synapto/_migrations/{suffix}"))
+
+    @pytest.mark.parametrize(
+        "suffix", ["005_malicious.sql.", "005_malicious.sql "], ids=["trailing_dot", "trailing_space"]
+    )
+    def test_a_windows_normalized_wheel_member_is_rejected(self, verifier, tmp_path, suffix):
+        with pytest.raises(verifier.VerificationError, match="dot or space"):
+            verifier._check_archive(self._wheel_plus(tmp_path, f"synapto/_migrations/{suffix}"))
+
+    def test_a_dots_only_component_is_rejected(self, verifier, tmp_path):
+        name = "synapto-0.5.1/.../001_initial.sql."
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(self._sdist_plus(tmp_path, name))
+
+    @pytest.mark.parametrize("name", ["NUL", "CON.txt", "COM1", "LPT9.sql", "bad?.txt", 'quote".txt'])
+    def test_unportable_names_are_rejected(self, verifier, tmp_path, name):
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(self._sdist_plus(tmp_path, f"synapto-0.5.1/{name}"))
+
+    def test_an_uppercase_sql_stray_is_rejected_in_the_wheel(self, verifier, tmp_path):
+        # the wheel path compared extensions case-sensitively
+        with pytest.raises(verifier.VerificationError, match="outside"):
+            verifier._check_archive(self._wheel_plus(tmp_path, "elsewhere/EVIL.SQL"))
+
+
+class TestZipHeaderNamesMustAgree:
+    """Every member is opened, not only the canonical four."""
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_headers")
+
+    def _wheel_with_local_alias(self, tmp_path, central_name, local_name):
+        import struct
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                zf.writestr(f"synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode())
+            zf.writestr(central_name, MALICIOUS_SQL)
+
+        raw = bytearray(wheel.read_bytes())
+        target = central_name.encode()
+        index = raw.find(b"PK")
+        while index != -1:
+            length = struct.unpack_from("<H", raw, index + 26)[0]
+            start = index + 30
+            if bytes(raw[start : start + length]) == target:
+                assert len(local_name) == length, "replacement name must keep the header length"
+                raw[start : start + length] = local_name.encode()
+                break
+            index = raw.find(b"PK", index + 1)
+        wheel.write_bytes(bytes(raw))
+        return wheel
+
+    def test_a_local_header_aliasing_a_canonical_migration_is_rejected(self, verifier, tmp_path, capsys):
+        # bsdtar extracts this and overwrites the verified migration; zipfile
+        # only notices when the member is actually opened
+        wheel = self._wheel_with_local_alias(
+            tmp_path, "synapto/_migrations/000_payload.bin", "synapto/_migrations/001_initial.sql"
+        )
+
+        with pytest.raises(verifier.VerificationError, match="cannot read"):
+            verifier._check_archive(wheel)
+
+        assert verifier.main(["verify_wheel.py", str(wheel)]) == 1
+        assert "Traceback" not in capsys.readouterr().err
+
+    def test_a_local_header_with_a_traversal_name_is_rejected(self, verifier, tmp_path):
+        wheel = self._wheel_with_local_alias(
+            tmp_path, "synapto/_migrations/000_payload.bin", "synapto/_migrations/../evil1234.sql"
+        )
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_archive(wheel)
+
+
+class TestZipCreatorMetadata:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_creator")
+
+    def _wheel(self, tmp_path, *, create_system, external_attr):
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                info = zipfile.ZipInfo(f"synapto/_migrations/{name}")
+                info.create_system = create_system
+                info.external_attr = external_attr
+                zf.writestr(info, (bundle / name).read_text(encoding="utf-8").encode())
+        return wheel
+
+    def test_ntfs_creator_with_a_directory_bit_is_rejected(self, verifier, tmp_path):
+        with pytest.raises(verifier.VerificationError, match="DOS directory"):
+            verifier._check_archive(self._wheel(tmp_path, create_system=10, external_attr=0x10))
+
+    def test_unix_creator_with_a_contradictory_dos_bit_is_rejected(self, verifier, tmp_path):
+        contradictory = (stat.S_IFREG | 0o644) << 16 | 0x10
+
+        with pytest.raises(verifier.VerificationError, match="DOS directory"):
+            verifier._check_archive(self._wheel(tmp_path, create_system=3, external_attr=contradictory))
+
+    def test_an_unsupported_creator_system_is_rejected(self, verifier, tmp_path):
+        with pytest.raises(verifier.VerificationError, match="unsupported system"):
+            verifier._check_archive(self._wheel(tmp_path, create_system=7, external_attr=0))
+
+    def test_a_clean_unix_wheel_passes(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path, create_system=3, external_attr=(stat.S_IFREG | 0o644) << 16))
+
+    def test_a_clean_dos_archive_bit_wheel_passes(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path, create_system=0, external_attr=0x20))
+
+
+class TestTarTerminatorIsExact:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_terminator")
+
+    def test_an_ordinary_sdist_passes(self, verifier, tmp_path):
+        verifier._check_sdist(_sdist_with(tmp_path, _canonical_members()))  # must not raise
+
+    def test_a_concatenated_gzip_member_with_opaque_bytes_is_rejected(self, verifier, tmp_path):
+        # ignore_zeros caught a second valid TAR header but skipped this in silence
+        import gzip as gzip_module
+
+        base = _sdist_with(tmp_path, _canonical_members())
+        appended = tmp_path / "appended" / "synapto-0.5.1.tar.gz"
+        appended.parent.mkdir(exist_ok=True)
+        appended.write_bytes(base.read_bytes() + gzip_module.compress(b"opaque-not-zero"))
+
+        with pytest.raises(verifier.VerificationError, match="non-zero data"):
+            verifier._check_sdist(appended)
+
+    def test_a_second_tar_segment_is_rejected(self, verifier, tmp_path):
+        import io
+        import tarfile
+
+        path = tmp_path / "second" / "synapto-0.5.1.tar.gz"
+        path.parent.mkdir(exist_ok=True)
+        with tarfile.open(path, "w:gz") as tar:
+            for name, body, _kind in _canonical_members():
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+            tar.fileobj.write(b"\0" * 1024)
+            hidden = tarfile.TarInfo("synapto-0.5.1/hidden.txt")
+            hidden.size = 3
+            tar.addfile(hidden, io.BytesIO(b"bad"))
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(path)
