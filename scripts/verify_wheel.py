@@ -79,6 +79,67 @@ _ZIP_READ_ERRORS = (
 )
 
 
+# Local file header layout (PKWARE APPNOTE 4.3.7): signature, then fixed fields,
+# with the extra-field length at offset 28.
+_LOCAL_HEADER_SIGNATURE = b"PK\x03\x04"
+_LOCAL_HEADER_SIZE = 30
+_LOCAL_EXTRA_LENGTH_OFFSET = 28
+
+
+def _assert_no_extra_fields(wheel: Path, infos: list[zipfile.ZipInfo]) -> None:
+    """Require every entry to carry no extra fields, central or local.
+
+    APPNOTE 4.6.9 defines extra field 0x7075 as an *alternate* UTF-8 file name.
+    A wheel can therefore present a benign name in both filename fields while a
+    local-only 0x7075 remaps the entry to a canonical migration: uv reads the
+    central view and keeps the real file, but bsdtar honors the local override
+    and overwrites it. Neither ``ZipInfo.filename`` nor the central ``extra``
+    shows that.
+
+    A partial 0x7075 parser would be a second place to get this wrong, so this
+    release gate simply refuses any extra field. The clean Hatch wheel has none,
+    central or local, so nothing legitimate is lost.
+    """
+    for info in infos:
+        if info.extra:
+            raise VerificationError(f"wheel member {info.filename} carries a central extra field, which can rename it")
+
+    try:
+        with wheel.open("rb") as handle:
+            for info in infos:
+                handle.seek(info.header_offset)
+                header = handle.read(_LOCAL_HEADER_SIZE)
+                if len(header) < _LOCAL_HEADER_SIZE or not header.startswith(_LOCAL_HEADER_SIGNATURE):
+                    raise VerificationError(f"wheel member {info.filename} has no valid local header")
+
+                extra_length = int.from_bytes(
+                    header[_LOCAL_EXTRA_LENGTH_OFFSET : _LOCAL_EXTRA_LENGTH_OFFSET + 2], "little"
+                )
+                if extra_length:
+                    raise VerificationError(
+                        f"wheel member {info.filename} carries a local extra field, which can rename it"
+                    )
+    except VerificationError:
+        raise
+    except OSError as exc:
+        raise VerificationError(f"cannot read local headers from {wheel.name}: {exc}") from exc
+
+
+def _assert_name_not_sanitized(info: zipfile.ZipInfo) -> None:
+    """Reject a name Python had to repair before showing it.
+
+    ``ZipInfo.filename`` is truncated at the first NUL while ``orig_filename``
+    keeps the raw bytes, so a NUL check on ``filename`` can never fire. The
+    sanitized spelling is what the gate would classify, and the raw one is what
+    an extractor may act on.
+    """
+    if info.orig_filename != info.filename:
+        raise VerificationError(
+            f"wheel member {info.orig_filename!r} was normalized to {info.filename!r}; "
+            "the stored name is not usable as written"
+        )
+
+
 def _stream_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> None:
     """Read a member to EOF so the archive has to prove it can produce it.
 
@@ -115,6 +176,10 @@ def _check_archive(wheel: Path) -> None:
         except _ZIP_READ_ERRORS as exc:
             raise VerificationError(f"cannot list {wheel.name}: {exc}") from exc
 
+        for info in infos:
+            _assert_name_not_sanitized(info)
+        _assert_no_extra_fields(wheel, infos)
+
         # the installed probe runs on one host and cannot prove how a
         # case-insensitive or Windows filesystem would resolve these names
         _reject_aliases(
@@ -133,9 +198,10 @@ def _check_archive(wheel: Path) -> None:
         if bundled != expected:
             raise VerificationError(f"wheel migration members are {bundled}, expected {expected}")
 
+        # directory entries are streamed too: a central entry declaring a
+        # directory while its local header names a canonical migration passed
+        # untouched, and bsdtar then replaced that file with a directory
         for info in infos:
-            if info.is_dir():
-                continue
             if info.filename in expected:
                 _assert_regular_zip_member(info)
             _stream_member(archive, info)
@@ -237,6 +303,13 @@ def _member_components(name: str, *, is_dir: bool) -> list[str]:
                 f"archive member {name!r} has a component ending in a dot or space, which Windows silently removes"
             )
 
+        # the Object Manager strips a leading ASCII space too, so " __init__.py"
+        # aliases "__init__.py". Only U+0020, not Unicode whitespace generally.
+        if part.startswith(" "):
+            raise VerificationError(
+                f"archive member {name!r} has a component starting with a space, which Windows silently removes"
+            )
+
         if part.split(".", 1)[0].upper() in _WINDOWS_DEVICES:
             raise VerificationError(f"archive member {name!r} names a reserved Windows device")
 
@@ -298,12 +371,15 @@ def _assert_gzip_intact(sdist: Path) -> None:
         raise VerificationError(f"{sdist.name} is not a complete gzip archive: {exc}") from exc
 
 
-# ZIP creator systems whose external_attr we know how to read.
-_DOS_CREATORS = (0, 10)  # MS-DOS/FAT and NTFS both use the DOS attribute byte
+# Only creator 0 is MS-DOS. APPNOTE specifies the low attribute byte for that
+# system alone; creator 10 is NTFS, whose mapping is not specified there, so it
+# is refused rather than guessed at for a release artifact.
+_DOS_CREATOR = 0
 _UNIX_CREATOR = 3
 
-_DOS_DIRECTORY = 0x10
 _DOS_VOLUME_LABEL = 0x08
+_DOS_DIRECTORY = 0x10
+_DOS_DEVICE = 0x40
 
 
 def _assert_regular_zip_member(info: zipfile.ZipInfo) -> None:
@@ -311,14 +387,12 @@ def _assert_regular_zip_member(info: zipfile.ZipInfo) -> None:
 
     Which half of ``external_attr`` carries meaning depends on
     ``create_system``, and reading only the Unix high bits let a member written
-    with the DOS directory bit pass as a file. Both halves are now checked, and
-    an unrecognized creator system is refused rather than assumed to be Unix.
+    with the DOS directory bit pass as a file.
     """
     dos_attributes = info.external_attr & 0xFF
-    if dos_attributes & _DOS_DIRECTORY:
-        raise VerificationError(f"wheel member {info.filename} is marked as a DOS directory")
-    if dos_attributes & _DOS_VOLUME_LABEL:
-        raise VerificationError(f"wheel member {info.filename} is marked as a DOS volume label")
+    for bit, label in ((_DOS_DIRECTORY, "directory"), (_DOS_VOLUME_LABEL, "volume label"), (_DOS_DEVICE, "device")):
+        if dos_attributes & bit:
+            raise VerificationError(f"wheel member {info.filename} is marked as a DOS {label}")
 
     if info.create_system == _UNIX_CREATOR:
         file_type = (info.external_attr >> 16) & 0o170000
@@ -326,7 +400,7 @@ def _assert_regular_zip_member(info: zipfile.ZipInfo) -> None:
             raise VerificationError(f"wheel member {info.filename} is not a regular file (type {file_type:o})")
         return
 
-    if info.create_system in _DOS_CREATORS:
+    if info.create_system == _DOS_CREATOR:
         return
 
     raise VerificationError(

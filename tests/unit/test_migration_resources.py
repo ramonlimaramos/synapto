@@ -1589,3 +1589,232 @@ class TestTarTerminatorIsExact:
 
         with pytest.raises(verifier.VerificationError):
             verifier._check_sdist(path)
+
+
+def _wheel_from_members(path, extra_writer=None):
+    """Build a wheel with the canonical migrations plus an optional extra member."""
+    from importlib import resources
+
+    bundle = resources.files(MIGRATIONS_PACKAGE)
+    path.unlink(missing_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        for name in EXPECTED:
+            zf.writestr(f"synapto/_migrations/{name}", (bundle / name).read_text(encoding="utf-8").encode())
+        if extra_writer is not None:
+            extra_writer(zf)
+    return path
+
+
+def _unicode_path_extra(alternate: str, original: str) -> bytes:
+    """Build an Info-ZIP Unicode Path (0x7075) extra field."""
+    import struct
+    import zlib as zlib_module
+
+    payload = b"\x01" + struct.pack("<I", zlib_module.crc32(original.encode())) + alternate.encode()
+    return struct.pack("<HH", 0x7075, len(payload)) + payload
+
+
+def _assert_cli_rejects(verifier, capsys, *args):
+    """Every adversarial case must fail through the public CLI, cleanly."""
+    assert verifier.main(["verify_wheel.py", *args]) == 1
+    captured = capsys.readouterr()
+    assert "FAILED" in captured.err
+    assert "Traceback" not in captured.err
+
+
+class TestZipExtraFieldsAreRefused:
+    """0x7075 is an *alternate* UTF-8 name, invisible to ZipInfo.filename.
+
+    A local-only 0x7075 lets uv keep the canonical file while bsdtar overwrites
+    it, so neither filename field nor the central extra shows the substitution.
+    This gate refuses any extra field rather than parsing one partially.
+    """
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_extras")
+
+    def test_a_central_unicode_path_extra_is_rejected(self, verifier, tmp_path, capsys):
+        def add(zf):
+            info = zipfile.ZipInfo("synapto/_migrations/000_payload.bin")
+            info.extra = _unicode_path_extra(
+                "synapto/_migrations/001_initial.sql", "synapto/_migrations/000_payload.bin"
+            )
+            zf.writestr(info, MALICIOUS_SQL)
+
+        wheel = _wheel_from_members(tmp_path / "synapto-0.5.1-py3-none-any.whl", add)
+
+        with zipfile.ZipFile(wheel) as zf:
+            assert any(info.extra for info in zf.infolist()), "fixture carries no central extra field"
+
+        _assert_cli_rejects(verifier, capsys, str(wheel))
+
+    def test_a_local_only_unicode_path_extra_is_rejected(self, verifier, tmp_path, capsys):
+        import struct
+
+        wheel = _wheel_from_members(tmp_path / "synapto-0.5.1-py3-none-any.whl")
+        extra = _unicode_path_extra(
+            "synapto/_migrations/001_initial.sql", "synapto/_migrations/004_add_memory_subtype.sql"
+        )
+
+        raw = bytearray(wheel.read_bytes())
+        index = raw.find(b"PK\x03\x04")
+        target = b"synapto/_migrations/004_add_memory_subtype.sql"
+        while index != -1:
+            length = struct.unpack_from("<H", raw, index + 26)[0]
+            if bytes(raw[index + 30 : index + 30 + length]) == target:
+                struct.pack_into("<H", raw, index + 28, len(extra))
+                raw[index + 30 + length : index + 30 + length] = extra
+                break
+            index = raw.find(b"PK\x03\x04", index + 1)
+        else:
+            raise AssertionError("local header not found")
+        wheel.write_bytes(bytes(raw))
+
+        # the central view must still look clean, or the test proves nothing
+        with zipfile.ZipFile(wheel) as zf:
+            assert not any(info.extra for info in zf.infolist()), "fixture leaked a central extra field"
+
+        _assert_cli_rejects(verifier, capsys, str(wheel))
+
+    def test_a_clean_wheel_has_no_extras_and_passes(self, verifier, tmp_path):
+        wheel = _wheel_from_members(tmp_path / "synapto-0.5.1-py3-none-any.whl")
+
+        with zipfile.ZipFile(wheel) as zf:
+            assert not any(info.extra for info in zf.infolist())
+
+        verifier._check_archive(wheel)  # must not raise
+
+
+class TestDirectoryEntriesAreVerifiedToo:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_dirs")
+
+    def test_a_directory_entry_aliasing_a_migration_is_rejected(self, verifier, tmp_path, capsys):
+        import struct
+
+        # skipping is_dir() entries let a central "directory" whose local header
+        # named a canonical migration through; bsdtar replaces the file with a dir
+        wheel = _wheel_from_members(
+            tmp_path / "synapto-0.5.1-py3-none-any.whl", lambda zf: zf.writestr("synapto/_migrations/somedir/", b"")
+        )
+        raw = bytearray(wheel.read_bytes())
+        target = b"synapto/_migrations/somedir/"
+        index = raw.find(b"PK\x03\x04")
+        while index != -1:
+            length = struct.unpack_from("<H", raw, index + 26)[0]
+            if bytes(raw[index + 30 : index + 30 + length]) == target:
+                raw[index + 30 : index + 30 + length] = b"synapto/_migrations/001_init"[:length].ljust(length, b"x")
+                break
+            index = raw.find(b"PK\x03\x04", index + 1)
+        wheel.write_bytes(bytes(raw))
+
+        _assert_cli_rejects(verifier, capsys, str(wheel))
+
+    def test_an_ordinary_directory_entry_is_accepted(self, verifier, tmp_path):
+        wheel = _wheel_from_members(
+            tmp_path / "synapto-0.5.1-py3-none-any.whl", lambda zf: zf.writestr("synapto/_migrations/sub/", b"")
+        )
+
+        verifier._check_archive(wheel)  # must not raise
+
+
+class TestLeadingSpaceIsAnAlias:
+    """Windows strips a leading ASCII space, so " __init__.py" aliases the real file."""
+
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_space")
+
+    def test_a_leading_space_member_in_a_wheel_is_rejected(self, verifier, tmp_path, capsys):
+        wheel = _wheel_from_members(
+            tmp_path / "synapto-0.5.1-py3-none-any.whl", lambda zf: zf.writestr("synapto/ __init__.py", b"x")
+        )
+
+        _assert_cli_rejects(verifier, capsys, str(wheel))
+
+    def test_a_leading_space_member_in_an_sdist_is_rejected(self, verifier, tmp_path, capsys):
+        wheel = _wheel_from_members(tmp_path / "synapto-0.5.1-py3-none-any.whl")
+        sdist = _sdist_with(tmp_path, _canonical_members() + [("synapto-0.5.1/src/synapto/ __init__.py", b"x", "file")])
+
+        _assert_cli_rejects(verifier, capsys, str(wheel), str(sdist))
+
+    def test_a_leading_space_device_name_is_rejected(self, verifier, tmp_path):
+        sdist = _sdist_with(tmp_path, _canonical_members() + [("synapto-0.5.1/ CON.txt", b"x", "file")])
+
+        with pytest.raises(verifier.VerificationError):
+            verifier._check_sdist(sdist)
+
+    def test_a_leading_period_is_not_rejected(self, verifier, tmp_path):
+        # a dotfile is legitimate; only the space is an Object Manager alias
+        sdist = _sdist_with(tmp_path, _canonical_members() + [("synapto-0.5.1/.temp", b"x", "file")])
+
+        verifier._check_sdist(sdist)  # must not raise
+
+
+class TestSanitizedNamesAreRefused:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_sanitized")
+
+    def test_a_name_truncated_at_a_nul_is_rejected(self, verifier, tmp_path, capsys):
+        import struct
+
+        # ZipInfo.filename is truncated at the first NUL, so a NUL check on it
+        # can never fire; orig_filename keeps what was actually stored
+        wheel = _wheel_from_members(tmp_path / "synapto-0.5.1-py3-none-any.whl")
+        raw = bytearray(wheel.read_bytes())
+        target = b"synapto/_migrations/004_add_memory_subtype.sql"
+        for signature, name_offset, length_offset in ((b"PK\x03\x04", 30, 26), (b"PK\x01\x02", 46, 28)):
+            index = raw.find(signature)
+            while index != -1:
+                length = struct.unpack_from("<H", raw, index + length_offset)[0]
+                if bytes(raw[index + name_offset : index + name_offset + length]) == target:
+                    replacement = (b"synapto/benign\x00extra" + b"y" * length)[:length]
+                    raw[index + name_offset : index + name_offset + length] = replacement
+                    break
+                index = raw.find(signature, index + 1)
+        wheel.write_bytes(bytes(raw))
+
+        with zipfile.ZipFile(wheel) as zf:
+            assert any(info.orig_filename != info.filename for info in zf.infolist()), "fixture was not truncated"
+
+        _assert_cli_rejects(verifier, capsys, str(wheel))
+
+
+class TestCreatorSystemSupport:
+    @pytest.fixture
+    def verifier(self):
+        return _load_verifier("verify_wheel_creators")
+
+    def _wheel(self, tmp_path, *, create_system, external_attr):
+        from importlib import resources
+
+        bundle = resources.files(MIGRATIONS_PACKAGE)
+        wheel = tmp_path / "synapto-0.5.1-py3-none-any.whl"
+        wheel.unlink(missing_ok=True)
+        with zipfile.ZipFile(wheel, "w") as zf:
+            for name in EXPECTED:
+                info = zipfile.ZipInfo(f"synapto/_migrations/{name}")
+                info.create_system = create_system
+                info.external_attr = external_attr
+                zf.writestr(info, (bundle / name).read_text(encoding="utf-8").encode())
+        return wheel
+
+    @pytest.mark.parametrize("external_attr", [0x400, 0], ids=["reparse_point", "ambiguous"])
+    def test_creator_10_is_unsupported(self, verifier, tmp_path, external_attr):
+        # APPNOTE specifies the DOS attribute byte for creator 0 only; NTFS is
+        # not specified there, so it is refused rather than guessed at
+        with pytest.raises(verifier.VerificationError, match="unsupported system"):
+            verifier._check_archive(self._wheel(tmp_path, create_system=10, external_attr=external_attr))
+
+    def test_a_dos_device_bit_is_rejected(self, verifier, tmp_path):
+        with pytest.raises(verifier.VerificationError, match="DOS device"):
+            verifier._check_archive(self._wheel(tmp_path, create_system=0, external_attr=0x40))
+
+    def test_a_clean_unix_wheel_still_passes(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path, create_system=3, external_attr=(stat.S_IFREG | 0o644) << 16))
+
+    def test_a_clean_dos_archive_bit_wheel_still_passes(self, verifier, tmp_path):
+        verifier._check_archive(self._wheel(tmp_path, create_system=0, external_attr=0x20))
