@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapto"
-version = "0.5.0"
+version = "0.5.1"
 description = "Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP"
 readme = "README.md"
 license = "MIT"
@@ -45,17 +45,20 @@ dependencies = [
     # pulled transitively by the MCP stack.
     "PyJWT>=2.13.0",
     # pinned to fix GHSA-537c-gmf6-5ccf, pulled transitively by authlib/joserfc.
-    "cryptography>=48.0.1",
+    "cryptography>=50.0.0",
     # pinned to fix CVE-2026-48990, pulled transitively by authlib.
     "joserfc>=1.6.7",
     # pinned to fix GHSA-4xgf-cpjx-pc3j, pulled transitively by the MCP stack.
     "pydantic-settings>=2.14.2",
+    # pinned to fix PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp.
+    "mcp>=1.28.1",
     "psycopg[binary,pool]>=3.1",
     "pgvector>=0.3.0",
     "redis>=5.0",
     "sentence-transformers>=3.0",
     "pydantic>=2.0",
-    "click>=8.0",
+    # pinned to fix PYSEC-2026-2132.
+    "click>=8.3.3",
     "tomli>=2.0;python_version<'3.11'",
     "tomli-w>=1.0",
     "numpy>=1.24",
