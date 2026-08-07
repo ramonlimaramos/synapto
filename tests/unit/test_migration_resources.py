@@ -1694,17 +1694,24 @@ def _unicode_path_extra(alternate: str, original: str) -> bytes:
     return struct.pack("<HH", 0x7075, len(payload)) + payload
 
 
-def _assert_cli_rejects(verifier, capsys, *args, expected: str):
-    """Require the CLI to fail *for the stated reason*.
+def _assert_cli_rejects(verifier, capsys, *args, expected):
+    """Require the CLI to fail *for a stated reason*.
 
     Checking only the return code let a fixture pass because uv rejected an
     incomplete wheel, or because an unrelated guard fired first.
+
+    ``expected`` may be several messages when the guard that fires legitimately
+    depends on the interpreter — never as a way to accept any failure.
     """
+    accepted = (expected,) if isinstance(expected, str) else tuple(expected)
+
     assert verifier.main(["verify_wheel.py", *args]) == 1
     captured = capsys.readouterr()
     assert "FAILED" in captured.err
     assert "Traceback" not in captured.err
-    assert expected in captured.err, f"expected {expected!r} in stderr, got: {captured.err.strip()}"
+    assert any(message in captured.err for message in accepted), (
+        f"expected one of {accepted!r} in stderr, got: {captured.err.strip()}"
+    )
 
 
 CANONICAL_MEMBER = "synapto/_migrations/001_initial.sql"
@@ -1747,7 +1754,17 @@ class TestZipExtraFieldsAreRefused:
             assert central_extras, "fixture carries no central extra field"
             assert central_extras[0].extra[:2] == b"\x75\x70", "fixture extra is not 0x7075"
 
-        _assert_cli_rejects(verifier, capsys, str(wheel), expected="carries a central extra field")
+        # CPython 3.12 applies 0x7075 to ZipInfo.filename while 3.11 does not, so
+        # the entry reaches a different guard first: the extra-field refusal on
+        # 3.11, and the sanitized-name refusal on 3.12+ because filename then
+        # disagrees with orig_filename. Both are the intended rejection for this
+        # fixture; neither is a generic failure.
+        _assert_cli_rejects(
+            verifier,
+            capsys,
+            str(wheel),
+            expected=("carries a central extra field", "was normalized to"),
+        )
 
     def test_a_local_only_extra_field_is_rejected(self, verifier, clean_wheel, tmp_path, capsys):
         import struct
