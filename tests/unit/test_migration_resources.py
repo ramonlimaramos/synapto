@@ -1685,6 +1685,28 @@ def _insert_local_extra(wheel: Path, stored_name: str, extra: bytes) -> Path:
     return wheel
 
 
+def _insert_central_extra(wheel: Path, stored_name: str, extra: bytes) -> Path:
+    """Add a central-only extra field and preserve the directory layout."""
+    import struct
+
+    raw = bytearray(wheel.read_bytes())
+    target = stored_name.encode()
+    central = _find_header(raw, b"PK\x01\x02", target, 46, 28)
+    assert struct.unpack_from("<H", raw, central + 30)[0] == 0, "central entry already carries an extra field"
+
+    struct.pack_into("<H", raw, central + 30, len(extra))
+    insertion = central + 46 + len(target)
+    raw[insertion:insertion] = extra
+
+    eocd = raw.rfind(b"PK\x05\x06")
+    assert eocd != -1, "no end-of-central-directory record"
+    directory_size = struct.unpack_from("<I", raw, eocd + 12)[0]
+    struct.pack_into("<I", raw, eocd + 12, directory_size + len(extra))
+
+    wheel.write_bytes(bytes(raw))
+    return wheel
+
+
 def _unicode_path_extra(alternate: str, original: str) -> bytes:
     """Build an Info-ZIP Unicode Path (0x7075) extra field."""
     import struct
@@ -1735,19 +1757,9 @@ class TestZipExtraFieldsAreRefused:
         return _load_verifier("verify_wheel_extras")
 
     def test_a_central_extra_field_is_rejected(self, verifier, clean_wheel, tmp_path, capsys):
-        import struct
-
         wheel = _copy_wheel(clean_wheel, tmp_path)
-        raw = bytearray(wheel.read_bytes())
         extra = _unicode_path_extra(CANONICAL_MEMBER, "synapto/__init__.py")
-        central = _find_header(raw, b"PK\x01\x02", b"synapto/__init__.py", 46, 28)
-        # central-only: the local header keeps its zero-length extra
-        struct.pack_into("<H", raw, central + 30, len(extra))
-        insertion = central + 46 + len(b"synapto/__init__.py")
-        raw[insertion:insertion] = extra
-        eocd = raw.rfind(b"PK\x05\x06")
-        struct.pack_into("<I", raw, eocd + 12, struct.unpack_from("<I", raw, eocd + 12)[0] + len(extra))
-        wheel.write_bytes(bytes(raw))
+        _insert_central_extra(wheel, "synapto/__init__.py", extra)
 
         with zipfile.ZipFile(wheel) as zf:
             central_extras = [info for info in zf.infolist() if info.extra]
@@ -1765,6 +1777,36 @@ class TestZipExtraFieldsAreRefused:
             str(wheel),
             expected=("carries a central extra field", "was normalized to"),
         )
+
+    def test_the_central_extra_gate_is_exercised_on_every_python(self, verifier, clean_wheel, tmp_path, capsys):
+        import struct
+
+        stored_name = "synapto/__init__.py"
+        wheel = _copy_wheel(clean_wheel, tmp_path)
+        # A valid identity 0x7075 is intentionally inert: CPython may apply it,
+        # but the decoded name stays unchanged, so only the extra-field gate can
+        # reject this member on every supported interpreter.
+        extra = _unicode_path_extra(stored_name, stored_name)
+        _insert_central_extra(wheel, stored_name, extra)
+
+        with zipfile.ZipFile(wheel) as zf:
+            info = zf.getinfo(stored_name)
+            assert info.orig_filename == info.filename == stored_name, "identity extra changed the decoded name"
+            assert info.extra == extra, "central 0x7075 was not preserved"
+            local_offset = info.header_offset
+
+        raw = wheel.read_bytes()
+        local_name_len, local_extra_len = struct.unpack_from("<HH", raw, local_offset + 26)
+        assert local_extra_len == 0, "fixture leaked the extra field into the local header"
+        assert raw[local_offset + 30 : local_offset + 30 + local_name_len].decode() == stored_name
+
+        central = _find_header(bytearray(raw), b"PK\x01\x02", stored_name.encode(), 46, 28)
+        central_name_len, central_extra_len = struct.unpack_from("<HH", raw, central + 28)
+        central_extra_offset = central + 46 + central_name_len
+        assert central_extra_len == len(extra), "central extra length was not written"
+        assert raw[central_extra_offset : central_extra_offset + central_extra_len] == extra
+
+        _assert_cli_rejects(verifier, capsys, str(wheel), expected="carries a central extra field")
 
     def test_a_local_only_extra_field_is_rejected(self, verifier, clean_wheel, tmp_path, capsys):
         import struct
