@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-27
+
+### Changed
+
+- **The 0.5 maintenance line is back on `main`.** `v0.5.1` was cut from
+  `release/0.5` and never merged back, so each line held work the other
+  lacked: `main` had the domain and typed-scope contracts without the
+  packaging hardening, and the published wheel had the hardening without the
+  scopes. Migrations `005` and `006` moved into the packaged
+  `src/synapto/_migrations/`, which is what makes them travel in a
+  distribution at all — without this, 0.6.0 would have shipped the same empty
+  bundle that 0.1.0 through 0.5.0 did. Existing migration checksums are
+  unchanged, so no database is orphaned. CI keeps `main`'s unexempted audit
+  and its isolated test DSN, and adopts the release line's `package` job,
+  which verifies both built artifacts rather than the source tree.
+
 ### Added
 
 - **typed scopes persisted and queried end to end** (groundwork for #45/#46/#47, none of which this closes): `MemoryRepository.create` accepts a `ScopeSet` and commits the memory with its memberships in one transaction; `update_with_scopes` updates fields and memberships in one transaction; `replace_scopes`/`clear_scopes` authorize the parent by tenant and active state under a `FOR UPDATE` lock before reaching the ID-only `ScopeRepository`, with `None` preserving, `[]` clearing, and a non-empty set replacing. Supplying `domain` and `scopes` together is rejected. `get_by_id`/`get_by_ids` carry ordered scopes, with `get_by_ids` normalizing ids to UUID and returning rows in the requested order, batched so a result page costs one extra query rather than one per memory. `hybrid_search` and `vector_search` accept a `scopes` filter implementing the Option B applicability rule — OR within a scope type, AND across the types a memory carries, extra query types imposing nothing, `global:all` always matching, unscoped memories excluded whenever a filter is given — expressed as `EXISTS`/`NOT EXISTS` so ranking is never duplicated. Filters are validated before embedding, so an invalid scope costs no model call and no query. `SearchResult` carries its scopes on both search paths, and `ScopeSet.to_payload`/`from_payload` give caches a deterministic representation that still reads pre-scope entries.
@@ -18,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **positional-argument compatibility restored** for `MemoryRepository.create`, `hybrid_search`, and `vector_search`. The scalar `domain` parameter had been inserted mid-signature — between `subtype` and `summary`, and ahead of `limit` — so a positional caller's summary or limit was silently rebound to it. `domain` and the new `scopes` are now keyword-only, after every established positional parameter.
 
 ### Security
+
+- Raised the dev-environment `pip` floor to `26.2` for PYSEC-2026-3721. The
+  audit now runs with no exemptions on this line: the `setuptools>=83` and
+  torch pins that forced two temporary exclusions on the v0.5 maintenance
+  branch are already satisfied here.
 
 - **cryptography constrained to >=50.0.0** to fix CVE-2026-69247, which turned main CI red immediately after the PR-2 merge. Pulled transitively by authlib/joserfc.
 - **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
