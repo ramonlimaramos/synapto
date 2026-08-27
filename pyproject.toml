@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapto"
-version = "0.5.0"
+version = "0.6.0"
 description = "Persistent memory graph for AI coding agents — semantic search, knowledge graph, and time-based decay over MCP"
 readme = "README.md"
 license = "MIT"
@@ -84,9 +84,9 @@ dev = [
     "msgpack>=1.2.1",
     # pinned to fix CVE-2026-3219/PYSEC-2026-196 in pip itself; uv bundles older
     # pip versions by default
-    # and pip-audit flags it. drop this constraint once uv ships a venv with
-    # pip>=26.1.2 out of the box.
-    "pip>=26.1.2",
+    # and pip-audit flags it. raised to 26.2 for PYSEC-2026-3721; drop this
+    # constraint once uv ships a venv with a fixed pip out of the box.
+    "pip>=26.2",
 ]
 
 [project.scripts]

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-27
+
+### Changed
+
+- **The 0.5 maintenance line is back on `main`.** `v0.5.1` was cut from
+  `release/0.5` and never merged back, so each line held work the other
+  lacked: `main` had the domain and typed-scope contracts without the
+  packaging hardening, and the published wheel had the hardening without the
+  scopes. Migrations `005` and `006` moved into the packaged
+  `src/synapto/_migrations/`, which is what makes them travel in a
+  distribution at all — without this, 0.6.0 would have shipped the same empty
+  bundle that 0.1.0 through 0.5.0 did. Existing migration checksums are
+  unchanged, so no database is orphaned. CI keeps `main`'s unexempted audit
+  and its isolated test DSN, and adopts the release line's `package` job,
+  which verifies both built artifacts rather than the source tree.
+
 ### Added
 
 - **typed scopes persisted and queried end to end** (groundwork for #45/#46/#47, none of which this closes): `MemoryRepository.create` accepts a `ScopeSet` and commits the memory with its memberships in one transaction; `update_with_scopes` updates fields and memberships in one transaction; `replace_scopes`/`clear_scopes` authorize the parent by tenant and active state under a `FOR UPDATE` lock before reaching the ID-only `ScopeRepository`, with `None` preserving, `[]` clearing, and a non-empty set replacing. Supplying `domain` and `scopes` together is rejected. `get_by_id`/`get_by_ids` carry ordered scopes, with `get_by_ids` normalizing ids to UUID and returning rows in the requested order, batched so a result page costs one extra query rather than one per memory. `hybrid_search` and `vector_search` accept a `scopes` filter implementing the Option B applicability rule — OR within a scope type, AND across the types a memory carries, extra query types imposing nothing, `global:all` always matching, unscoped memories excluded whenever a filter is given — expressed as `EXISTS`/`NOT EXISTS` so ranking is never duplicated. Filters are validated before embedding, so an invalid scope costs no model call and no query. `SearchResult` carries its scopes on both search paths, and `ScopeSet.to_payload`/`from_payload` give caches a deterministic representation that still reads pre-scope entries.
@@ -19,8 +35,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Security
 
+- Raised the dev-environment `pip` floor to `26.2` for PYSEC-2026-3721. The
+  audit now runs with no exemptions on this line: the `setuptools>=83` and
+  torch pins that forced two temporary exclusions on the v0.5 maintenance
+  branch are already satisfied here.
+
 - **cryptography constrained to >=50.0.0** to fix CVE-2026-69247, which turned main CI red immediately after the PR-2 merge. Pulled transitively by authlib/joserfc.
 - **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
+
+## [0.5.1] - 2026-08-07
+
+### Fixed
+
+- **SQL migrations are now bundled in published distributions.** Every wheel from 0.1.0 through 0.5.0 contained zero `.sql` files: the migrations lived in a repository-root `migrations/` directory that the wheel never packaged, so a clean `pip`/`uvx` install discovered nothing and reported success against an empty schema. `synapto init` created no tables. The files now live in `src/synapto/_migrations/` and are read through `importlib.resources`, so discovery works in source checkouts, editable installs, wheels, and zipped distributions alike. Migration filenames and bytes are unchanged, so existing databases keep matching on filename and checksum.
+- **Migration discovery fails closed.** A missing, unreadable, empty, or malformed bundle now raises `MigrationDiscoveryError` before any database call, in `migrate_up`, `migrate_down`, `get_migration_status`, and `run_migrations` — including before the legacy `synapto_schema` bridge, which swallows exceptions. Discovery also no longer falls back to `cwd/migrations`, which could read unrelated SQL from whatever directory the process happened to run in.
+
+### Added
+
+- **`scripts/verify_wheel.py`**, an artifact gate that installs a built wheel into a throwaway environment outside the repository and asserts that migration discovery returns the expected files and checksums, ignoring any foreign `cwd/migrations`. It checks the wheel *and* the sdist, runs in CI on Python 3.11, and runs in the release workflow immediately after build — before the tag, the PyPI upload, and the GitHub release — so a distribution without migrations cannot be published again. The release jobs are ordered build → tag → publish → github_release, so the recoverable mutation happens before the immutable one.
+
+### Security
+
+- Backported secure minimums: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483), and `cryptography>=50.0.0` (CVE-2026-69247).
+- Two audit exemptions remain, deliberately: `CVE-2025-3000` (Torch 2.11) and `PYSEC-2026-3447` (setuptools 81). Resolving them requires Torch 2.13 and `setuptools>=83`, which raise the Apple Silicon wheel floor to macOS 14. That is a platform decision for the v0.6 line, not something a patch release should change silently. **These exemptions expire with that decision.**
 
 ## [0.5.0] - 2026-07-01
 
