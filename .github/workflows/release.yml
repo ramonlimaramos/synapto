@@ -1,45 +1,64 @@
 name: release
 
+# Maintenance-branch release workflow for the v0.5 line.
+#
+# Deliberately narrower than the workflow on main. The generic version accepted
+# any ref and any bump type, and granted contents:write plus id-token:write to a
+# single job that also installed dependencies, built, and ran a third-party
+# action. Selecting main + patch there would have published unreleased main code
+# as 0.5.1. This one publishes exactly what release/0.5 already contains.
+
 on:
   workflow_dispatch:
-    inputs:
-      bump_type:
-        description: "version bump type (use 'current' to publish without bumping)"
-        required: true
-        type: choice
-        options:
-          - current
-          - patch
-          - minor
-          - major
 
+# Least privilege by default; each job widens only what it needs.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-v0.5
+  cancel-in-progress: false
+
+env:
+  EXPECTED_REF: refs/heads/release/0.5
+  EXPECTED_VERSION: "0.5.1"
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
-    environment: release
-
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.assert.outputs.version }}
     steps:
-      - name: check admin permission
-        uses: actions-cool/check-user-permission@v2
-        id: check
-        with:
-          require: admin
-          username: ${{ github.triggering_actor }}
-
-      - name: abort if not admin
-        if: steps.check.outputs.require-result != 'true'
-        run: |
-          echo "error: only repo admins can create releases"
-          exit 1
-
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fails before anything is built, so a wrong ref or a drifted version
+      # cannot reach the publishing jobs at all.
+      - name: assert release contract
+        id: assert
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF}" != "${EXPECTED_REF}" ]; then
+            echo "error: this workflow only releases ${EXPECTED_REF}, got ${GITHUB_REF}"
+            exit 1
+          fi
+
+          pyproject_version=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          init_version=$(grep -m1 '__version__ = ' src/synapto/__init__.py | cut -d'"' -f2)
+          lock_version=$(awk '/^name = "synapto"$/{found=1; next} found && /^version = /{print; exit}' uv.lock | cut -d'"' -f2)
+
+          for pair in "pyproject.toml:${pyproject_version}" "__init__.py:${init_version}" "uv.lock:${lock_version}"; do
+            file="${pair%%:*}"; value="${pair#*:}"
+            if [ "${value}" != "${EXPECTED_VERSION}" ]; then
+              echo "error: ${file} declares '${value}', expected '${EXPECTED_VERSION}'"
+              exit 1
+            fi
+          done
+
+          echo "version=${EXPECTED_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release contract verified: ${EXPECTED_REF} at ${EXPECTED_VERSION}"
 
       - name: install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -50,91 +69,107 @@ jobs:
       - name: install build tools
         run: uv sync --extra dev --python 3.13
 
-      - name: bump version
-        id: bump
-        run: |
-          uv run python - <<'PYEOF'
-          import tomli, tomli_w, re, os
-
-          bump_type = "${{ inputs.bump_type }}"
-
-          with open("pyproject.toml", "rb") as f:
-              data = tomli.load(f)
-
-          current = data["project"]["version"]
-
-          if bump_type == "current":
-              new_version = current
-          else:
-              major, minor, patch = map(int, current.split("."))
-              if bump_type == "major":
-                  major, minor, patch = major + 1, 0, 0
-              elif bump_type == "minor":
-                  minor, patch = minor + 1, 0
-              else:
-                  patch += 1
-              new_version = f"{major}.{minor}.{patch}"
-
-              # update pyproject.toml
-              data["project"]["version"] = new_version
-              with open("pyproject.toml", "wb") as f:
-                  tomli_w.dump(data, f)
-
-              # update __init__.py
-              init_path = "src/synapto/__init__.py"
-              with open(init_path) as f:
-                  content = f.read()
-              content = re.sub(r'__version__ = "[^"]+"', f'__version__ = "{new_version}"', content)
-              with open(init_path, "w") as f:
-                  f.write(content)
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"version={new_version}\n")
-              f.write(f"previous={current}\n")
-
-          print(f"bumped {current} -> {new_version}")
-          PYEOF
-
       - name: build package
         run: uv run python -m build
 
-      - name: commit version bump
-        if: inputs.bump_type != 'current'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml src/synapto/__init__.py
-          git commit -m "chore(synapto): bump version to ${{ steps.bump.outputs.version }}"
-          git push origin main
+      # The gate that makes this release line different: every artifact from
+      # 0.1.0 to 0.5.0 shipped without migrations and would have failed here.
+      - name: verify packaged migrations
+        run: uv run python scripts/verify_wheel.py dist/*.whl dist/*.tar.gz
 
+      - name: upload verified artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Tagging comes before publishing on purpose. A PyPI upload is immutable, so
+  # discovering a tag collision afterwards would leave a published artifact with
+  # no matching source tag and no way to undo it. Git, by contrast, is
+  # recoverable — so the mutation that can be fixed happens first.
+  tag:
+    needs: build
+    runs-on: ubuntu-latest
+    # First external mutation, so it sits behind the protected release gate.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Idempotent on retry: an existing tag is fine only if it already points
+      # at this exact commit. Anything else means the tag names different code.
       - name: create tag
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin "v${{ steps.bump.outputs.version }}"
+          set -euo pipefail
+          tag="v${VERSION}"
 
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            existing=$(git rev-list -n1 "${tag}")
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "error: ${tag} already points at ${existing}, not ${GITHUB_SHA}"
+              exit 1
+            fi
+            echo "${tag} already points at this commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "${tag}"
+            git push origin "${tag}"
+          fi
+
+  publish:
+    needs: [build, tag]
+    runs-on: ubuntu-latest
+    # Trusted Publishing resolves its identity through this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # No skip-existing: a re-run must fail loudly rather than paper over a
+      # partial publication, so recovery stays deterministic.
       - name: publish to pypi
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  github_release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Last and separately retryable: if this fails, re-running it does not
+      # republish to PyPI.
       - name: create github release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: "v${{ steps.bump.outputs.version }}"
-          name: "v${{ steps.bump.outputs.version }}"
+          tag_name: "v${{ needs.build.outputs.version }}"
+          name: "v${{ needs.build.outputs.version }}"
+          files: dist/*
           body: |
             ## what's changed
 
-            see [CHANGELOG.md](https://github.com/ramonlimaramos/synapto/blob/main/CHANGELOG.md) for details.
+            see [CHANGELOG.md](https://github.com/ramonlimaramos/synapto/blob/v${{ needs.build.outputs.version }}/CHANGELOG.md) for details.
 
             ### install / upgrade
 
             ```bash
-            pip install synapto==${{ steps.bump.outputs.version }}
+            pip install synapto==${{ needs.build.outputs.version }}
             ```
-
-            or with auto-updates (recommended):
-            ```json
-            { "command": "uvx", "args": ["--refresh", "synapto", "serve"] }
-            ```
-          files: dist/*
