@@ -49,6 +49,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The gate parses TOML with the standard library, so it needs 3.11+. The
+      # runner image's system interpreter is not a contract — pinning one here
+      # keeps a future ubuntu-latest rotation from turning the release path red
+      # for a reason unrelated to the release. No project dependency is
+      # installed: this job must stay able to fail in seconds.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       # Everything knowable before a build happens here, so a drifted version or
       # a colliding tag costs a few seconds instead of a published artifact that
       # cannot be withdrawn. The logic lives in a script rather than in this
