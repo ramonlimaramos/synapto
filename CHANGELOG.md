@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-04
+
 ### Added
 
 - **write origin, recorded at write time and never inferred** (#77). Nothing
@@ -22,18 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`recall(origin=...)` and `count_memories(origin=...)`**, so a loop can read
   back exactly what it wrote without re-ingesting the user's own rules. Indexed
   by `(tenant, origin)` on live rows.
-
-### Changed
-
-- **`forget` refuses a human-authored memory** (#77). Deleting one now requires
-  `allow_human=true`, passed per call, and the deletion is logged as an
-  explicit override. An agent following a heuristic will not pass the flag; a
-  person answering "yes, delete mine" will. `forget` had no test coverage at
-  all before this — worth noting, since it is the one tool whose failure mode
-  is unrecoverable.
-
-### Added
-
 - **`recall(metadata_filter=...)` and a match count that is not capped by
   `limit`** (#76). Memories carry an arbitrary `metadata` JSONB and nothing
   could query it, so "how many findings of `failure_class=x` exist?" could only
@@ -50,18 +40,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   paths instead of every key and value, which is smaller and faster for the
   containment operator this index exists to serve. The trade — no key-existence
   queries — is deliberate.
-
-### Changed
-
-- **a `metadata_filter` is one level of scalars, and nesting is rejected**
-  (#76). `@>` matches sub-objects and treats arrays as subsets, so a nested
-  filter would answer something subtler than the exact-key equality the
-  aggregation case needs, and the caller would have to know which. One level
-  has exactly one reading; anything else raises a `ToolError` naming the
-  offending key.
-
-### Added
-
 - **typed scopes are reachable from the MCP tools** (#75). The applicability
   axis was implemented and tested at four layers — the `memory_scopes` table,
   the `ScopeSet` value objects, the repository, and the search — and reachable
@@ -78,15 +56,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   and a non-canonical key raises with the canonical spelling named — the
   vocabulary's existing rejections, surfaced intact at the boundary instead of
   arriving as a repository traceback.
-
-### Changed
-
-- **`domain` is deprecated in the tool docstrings and unchanged in behaviour**
-  (#75). Every memory written so far uses it, so it stays accepted, stays in
-  the input schemas, and keeps filtering exactly as before.
-
-### Added
-
 - **the tenant is derived from a resolved location instead of supplied by the
   caller** (#74). `remember(tenant=...)` accepted any string while the tenant is
   a hard partition key, so a memory written under one spelling was invisible to
@@ -114,6 +83,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **`forget` refuses a human-authored memory** (#77). Deleting one now requires
+  `allow_human=true`, passed per call, and the deletion is logged as an
+  explicit override. An agent following a heuristic will not pass the flag; a
+  person answering "yes, delete mine" will. `forget` had no test coverage at
+  all before this — worth noting, since it is the one tool whose failure mode
+  is unrecoverable.
+- **a `metadata_filter` is one level of scalars, and nesting is rejected**
+  (#76). `@>` matches sub-objects and treats arrays as subsets, so a nested
+  filter would answer something subtler than the exact-key equality the
+  aggregation case needs, and the caller would have to know which. One level
+  has exactly one reading; anything else raises a `ToolError` naming the
+  offending key.
+- **`domain` is deprecated in the tool docstrings and unchanged in behaviour**
+  (#75). Every memory written so far uses it, so it stays accepted, stays in
+  the input schemas, and keeps filtering exactly as before.
 - **an absent tenant is no longer always `default`.** This is the intended
   behaviour change of #74 and it is visible: a process running inside a
   checkout now resolves that repository's `owner/name`. Memories previously
