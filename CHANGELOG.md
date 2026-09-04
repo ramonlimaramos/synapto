@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **write origin, recorded at write time and never inferred** (#77). Nothing
+  said who authored a memory, so a rule the user typed and a rule an automated
+  loop synthesized were indistinguishable once stored — tolerable only while
+  every write is human. `memories.origin` (migration `009`) carries a closed
+  `human | agent | consolidation` vocabulary, enforced by a `CHECK` as well as
+  in Python so a raw write cannot invent a fourth origin no pruning rule knows
+  how to treat. `remember(origin="agent")` lets an automated writer declare
+  itself; the value is a parameter, never derived from the transport, the
+  caller, or the content, following `hermes-agent`'s rule that the marker is
+  "never inferred from location". Existing rows backfill as `human`, which is
+  also simply true — no automated writer existed when they were written.
+- **`recall(origin=...)` and `count_memories(origin=...)`**, so a loop can read
+  back exactly what it wrote without re-ingesting the user's own rules. Indexed
+  by `(tenant, origin)` on live rows.
+
+### Changed
+
+- **`forget` refuses a human-authored memory** (#77). Deleting one now requires
+  `allow_human=true`, passed per call, and the deletion is logged as an
+  explicit override. An agent following a heuristic will not pass the flag; a
+  person answering "yes, delete mine" will. `forget` had no test coverage at
+  all before this — worth noting, since it is the one tool whose failure mode
+  is unrecoverable.
+
+### Added
+
 - **`recall(metadata_filter=...)` and a match count that is not capped by
   `limit`** (#76). Memories carry an arbitrary `metadata` JSONB and nothing
   could query it, so "how many findings of `failure_class=x` exist?" could only

@@ -13,6 +13,7 @@ from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
+from synapto.provenance import DEFAULT_ORIGIN, validate_origin
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.scopes import ScopeRepository
 from synapto.scopes import (
@@ -77,6 +78,7 @@ SELECT
     m.decay_score,
     m.trust_score,
     m.metadata,
+    m.origin,
     m.access_count,
     m.created_at,
     m.accessed_at,
@@ -121,6 +123,7 @@ class SearchResult:
     accessed_at: datetime
     domain: str | None = None
     scopes: ScopeSet = ScopeSet()
+    origin: str = DEFAULT_ORIGIN
 
 
 def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
@@ -266,6 +269,7 @@ def _build_memory_filters(
     domain: str | None = None,
     scopes: ScopeSet | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    origin: str | None = None,
     indent: str,
 ) -> tuple[str, dict[str, Any]]:
     """Build shared optional memory filters.
@@ -286,6 +290,10 @@ def _build_memory_filters(
     if domain:
         filters.append("AND domain = %(domain)s")
         params["domain"] = domain
+
+    if origin is not None:
+        filters.append("AND origin = %(origin)s")
+        params["origin"] = validate_origin(origin)
 
     if metadata_filter is not None:
         filters.append("AND metadata @> %(metadata_filter)s::jsonb")
@@ -311,6 +319,7 @@ async def hybrid_search(
     domain: str | None = None,
     scopes: ScopeSet | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> list[SearchResult]:
     """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR.
 
@@ -330,6 +339,7 @@ async def hybrid_search(
         domain=domain,
         scopes=scopes,
         metadata_filter=metadata_filter,
+        origin=origin,
         indent="      ",
     )
 
@@ -378,6 +388,7 @@ async def hybrid_search(
             trust_score=row.get("trust_score", 0.5),
             rrf_score=final_score,
             metadata=row["metadata"] or {},
+            origin=row.get("origin", DEFAULT_ORIGIN),
             access_count=row["access_count"],
             created_at=row["created_at"],
             accessed_at=row["accessed_at"],
@@ -390,6 +401,7 @@ async def hybrid_search(
 VECTOR_ONLY_TEMPLATE = """
 SELECT
     id, content, summary, type, subtype, domain, tenant, depth_layer, decay_score, trust_score, metadata,
+    origin,
     access_count, created_at, accessed_at,
     1 - (embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS similarity
 FROM memories
@@ -413,6 +425,7 @@ async def vector_search(
     domain: str | None = None,
     scopes: ScopeSet | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> list[SearchResult]:
     """Pure vector similarity search (no keyword component).
 
@@ -425,6 +438,7 @@ async def vector_search(
         domain=domain,
         scopes=scopes,
         metadata_filter=metadata_filter,
+        origin=origin,
         indent="  ",
     )
 
@@ -458,6 +472,7 @@ async def vector_search(
             trust_score=row.get("trust_score", 0.5),
             rrf_score=row.get("similarity", 0.0),
             metadata=row["metadata"] or {},
+            origin=row.get("origin", DEFAULT_ORIGIN),
             access_count=row["access_count"],
             created_at=row["created_at"],
             accessed_at=row["accessed_at"],
@@ -484,6 +499,7 @@ async def count_memories(
     domain: str | None = None,
     scopes: ScopeSet | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> int:
     """Count every memory matching the filters, independent of any page size.
 
@@ -508,6 +524,7 @@ async def count_memories(
         domain=domain,
         scopes=scopes,
         metadata_filter=metadata_filter,
+        origin=origin,
         indent="  ",
     )
     params = {"tenant": tenant, **filter_params}

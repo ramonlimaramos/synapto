@@ -26,6 +26,7 @@ from synapto.hrr.banks import rebuild_bank
 from synapto.hrr.core import DEFAULT_DIM, encode_fact, phases_to_bytes
 from synapto.hrr.retrieval import contradict as hrr_contradict
 from synapto.prompts import load_prompt
+from synapto.provenance import HUMAN, InvalidOriginError, validate_origin
 from synapto.repositories.entities import EntityRepository
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
@@ -221,6 +222,8 @@ def _format_memory(
         lines.append(f"domain: {row['domain']}")
     if row.get("scopes"):
         lines.append(f"scopes: {_format_scopes(row['scopes'])}")
+    if row.get("origin"):
+        lines.append(f"origin: {row['origin']}")
     lines += [
         f"depth_layer: {row['depth_layer']}",
         f"trust_score: {float(row.get('trust_score', 0.5)):.2f}",
@@ -259,6 +262,20 @@ def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
         except ValueError:
             invalid_ids.append(memory_id)
     return valid_ids, invalid_ids
+
+
+def _parse_origin(origin: object) -> str:
+    """Validate a declared write origin at the tool boundary.
+
+    Origin is declared, never derived: nothing here looks at the transport, the
+    caller, or the content to decide who is writing. A tool that guessed would
+    produce a marker that is wrong exactly when it matters — on the automated
+    writes a pruning pass is allowed to delete.
+    """
+    try:
+        return validate_origin(origin)
+    except InvalidOriginError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _parse_scopes(domain: str | None, scopes: list[str] | list[dict] | None) -> ScopeSet | None:
@@ -456,6 +473,7 @@ async def remember(
     metadata: dict[str, Any] | None = None,
     extract_entities: bool = True,
     scopes: list[str] | None = None,
+    origin: str = HUMAN,
 ) -> str:
     """Store a memory with optional entity extraction.
 
@@ -516,6 +534,7 @@ async def remember(
     )
 
     parsed_scopes = _parse_scopes(domain, scopes)
+    declared_origin = _parse_origin(origin)
 
     pg = _get_pg()
     provider = _get_provider()
@@ -536,6 +555,7 @@ async def remember(
         summary=summary,
         metadata=metadata,
         scopes=parsed_scopes,
+        origin=declared_origin,
     )
 
     entity_names = []
@@ -686,6 +706,7 @@ async def recall(
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
     scopes: list[str] | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> str:
     """Search memories using hybrid semantic + keyword search with RRF ranking.
 
@@ -724,8 +745,13 @@ async def recall(
             a memory matches when its metadata contains every pair. When given,
             the result reports the true number of matches, which is not capped
             by limit — that count is what an occurrence threshold needs.
+        origin: restrict to writes of one provenance: "human", "agent", or
+            "consolidation". An automated loop passes origin="agent" to read back
+            exactly what it wrote without also re-ingesting the user's own rules.
     """
     parsed_scopes = _parse_scopes(domain, scopes)
+    if origin is not None:
+        _parse_origin(origin)
     if metadata_filter is not None:
         try:
             validate_metadata_filter(metadata_filter)
@@ -749,6 +775,7 @@ async def recall(
         limit=limit,
         scopes=parsed_scopes,
         metadata_filter=metadata_filter,
+        origin=origin,
     )
 
     if not results:
@@ -775,7 +802,7 @@ async def recall(
             f"  id={r.id}"
         )
     headline = f"Recalled {len(results)} memories"
-    if metadata_filter is not None or parsed_scopes is not None:
+    if metadata_filter is not None or parsed_scopes is not None or origin is not None:
         total = await count_memories(
             pg,
             tenant=t,
@@ -784,6 +811,7 @@ async def recall(
             domain=domain,
             scopes=parsed_scopes,
             metadata_filter=metadata_filter,
+            origin=origin,
         )
         headline += f" of {total} matching the filters"
     body = f"{load_prompt('recall_preamble')}\n{headline}:\n\n" + "\n\n".join(memories)
@@ -921,18 +949,40 @@ async def relate(
 
 @mcp.tool
 @instrumented_tool
-async def forget(memory_id: str) -> str:
+async def forget(memory_id: str, allow_human: bool = False) -> str:
     """Soft-delete a memory by ID.
+
+    Human-authored memories are protected. An automated caller deleting by rule
+    cannot tell a synthesized memory from one the user typed unless something
+    recorded the difference, so this refuses a `human` memory outright and
+    requires the caller to say, explicitly and per call, that it means to delete
+    a person's rule. The refusal is the point: an agent following a heuristic
+    will not pass the flag, and a human answering "yes, delete mine" will.
 
     Args:
         memory_id: UUID of the memory to delete
+        allow_human: delete even when the memory was authored by a human. Leave
+            it false in any automated path.
     """
     pg = _get_pg()
     repo = MemoryRepository(pg)
+
+    origin = await repo.get_origin(memory_id)
+    if origin is None:
+        return f"memory {memory_id} not found or already deleted"
+    if origin == HUMAN and not allow_human:
+        return (
+            f"refused: memory {memory_id} was authored by a human (origin={HUMAN}). "
+            "Pass allow_human=true to delete it anyway; automated passes should skip it instead."
+        )
+
     rows = await repo.soft_delete(memory_id)
     if rows:
         cache = _get_cache()
         await cache.invalidate_memory(UUID(memory_id))
+        if origin == HUMAN:
+            logger.warning("human-authored memory %s deleted with an explicit override", memory_id)
+            return f"memory {memory_id} soft-deleted (human-authored, deleted by explicit override)"
         return f"memory {memory_id} soft-deleted"
     return f"memory {memory_id} not found or already deleted"
 
