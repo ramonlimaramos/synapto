@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **typed scopes are reachable from the MCP tools** (#75). The applicability
+  axis was implemented and tested at four layers — the `memory_scopes` table,
+  the `ScopeSet` value objects, the repository, and the search — and reachable
+  from none of them, because `server.py` exposed only `domain`. A single string
+  cannot express an intersection, so `domain=python` matched Python memories
+  from every repository at once and `language:python ∧ repo:acme/api` had no
+  path to a caller. `remember`, `recall`, and `update_memory` now accept
+  `scopes` in the compact `"<type>:<key>"` form, `get_memory` and `recall`
+  render them back in that same form, and `ScopeSet.parse` reads the compact
+  spelling alongside the mapping form it already accepted. Splitting once on
+  the first `:` is what keeps `repo:acme/api` intact; a scope with no type is
+  rejected rather than guessed at, because `"python"` could be a language or a
+  skill. Supplying both `domain` and `scopes` raises a `ToolError` naming both,
+  and a non-canonical key raises with the canonical spelling named — the
+  vocabulary's existing rejections, surfaced intact at the boundary instead of
+  arriving as a repository traceback.
+
+### Changed
+
+- **`domain` is deprecated in the tool docstrings and unchanged in behaviour**
+  (#75). Every memory written so far uses it, so it stays accepted, stays in
+  the input schemas, and keeps filtering exactly as before.
+
+### Added
+
 - **the tenant is derived from a resolved location instead of supplied by the
   caller** (#74). `remember(tenant=...)` accepted any string while the tenant is
   a hard partition key, so a memory written under one spelling was invisible to

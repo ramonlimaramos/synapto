@@ -30,6 +30,7 @@ from synapto.repositories.entities import EntityRepository
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
 from synapto.repositories.tenants import TenantAliasRepository
+from synapto.scopes import InvalidScopeError, ScopeSet, reject_conflicting_scope_arguments
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
 from synapto.telemetry import (
@@ -187,6 +188,15 @@ def _validate_memory_fields(
     )
 
 
+def _format_scopes(scopes: Any) -> str:
+    """Render a memory's scopes in the compact form the tools accept back.
+
+    Output the caller can paste straight into the next call's ``scopes``
+    argument, rather than a repr of the value object.
+    """
+    return ", ".join(f"{ref.scope_type}:{ref.scope_key}" for ref in scopes)
+
+
 def _format_memory(
     row: dict[str, Any],
     *,
@@ -204,6 +214,8 @@ def _format_memory(
         lines.append(f"subtype: {row['subtype']}")
     if row.get("domain"):
         lines.append(f"domain: {row['domain']}")
+    if row.get("scopes"):
+        lines.append(f"scopes: {_format_scopes(row['scopes'])}")
     lines += [
         f"depth_layer: {row['depth_layer']}",
         f"trust_score: {float(row.get('trust_score', 0.5)):.2f}",
@@ -242,6 +254,33 @@ def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
         except ValueError:
             invalid_ids.append(memory_id)
     return valid_ids, invalid_ids
+
+
+def _parse_scopes(domain: str | None, scopes: list[str] | list[dict] | None) -> ScopeSet | None:
+    """Turn a tool's ``scopes`` argument into the value object the layers below expect.
+
+    Two rejections happen here rather than deeper down, so the caller sees a
+    tool error instead of a traceback from the repository:
+
+    *Supplying both axes.* ``domain`` is the single-value axis typed scopes
+    supersede; composing them would silently AND two applicability models, and
+    picking one would silently ignore what the caller asked for.
+
+    *A non-canonical key.* The scope vocabulary rejects rather than repairs, and
+    names the canonical spelling when one exists — surfacing that intact is the
+    whole value of doing the parse at the boundary.
+
+    ``None`` means the caller said nothing about scopes; an empty list is a
+    deliberate assertion and is preserved as such for the mutation contract.
+    """
+    if scopes is None:
+        return None
+    try:
+        parsed = ScopeSet.parse(scopes)
+        reject_conflicting_scope_arguments(domain, parsed)
+    except InvalidScopeError as exc:
+        raise ToolError(str(exc)) from exc
+    return parsed
 
 
 async def _resolve_tenant_for(pg: PostgresClient, tenant: str | None) -> str:
@@ -411,6 +450,7 @@ async def remember(
     summary: str | None = None,
     metadata: dict[str, Any] | None = None,
     extract_entities: bool = True,
+    scopes: list[str] | None = None,
 ) -> str:
     """Store a memory with optional entity extraction.
 
@@ -470,6 +510,8 @@ async def remember(
         summary=summary,
     )
 
+    parsed_scopes = _parse_scopes(domain, scopes)
+
     pg = _get_pg()
     provider = _get_provider()
     t = await _resolve_tenant_for(pg, tenant)
@@ -488,6 +530,7 @@ async def remember(
         depth_layer=depth_layer,
         summary=summary,
         metadata=metadata,
+        scopes=parsed_scopes,
     )
 
     entity_names = []
@@ -523,6 +566,7 @@ async def update_memory(
     summary: str | None = None,
     metadata_patch: dict[str, Any] | None = None,
     append: str | None = None,
+    scopes: list[str] | None = None,
 ) -> str:
     """Update an existing memory without re-sending the whole record.
 
@@ -532,15 +576,20 @@ async def update_memory(
         summary: optional replacement summary (max 255 chars)
         metadata_patch: optional JSON object shallow-merged into existing metadata
         append: text appended to the existing content (mutually exclusive with content)
+        scopes: replacement applicability scopes as "<type>:<key>" strings. Omitting
+            the argument preserves what the memory already carries; an empty list
+            clears them. Rescoping authorizes through the memory's tenant and
+            commits with the field changes in one transaction.
     """
     if content is not None and append is not None:
         raise ToolError("content and append are mutually exclusive; provide one or the other")
-    if content is None and summary is None and metadata_patch is None and append is None:
+    if content is None and summary is None and metadata_patch is None and append is None and scopes is None:
         raise ToolError("provide at least one field to update")
     if metadata_patch is not None and not isinstance(metadata_patch, dict):
         raise ToolError("metadata_patch must be a JSON object")
 
     _validate_memory_fields(summary=summary)
+    parsed_scopes = _parse_scopes(None, scopes)
 
     try:
         parsed_id = UUID(memory_id)
@@ -564,14 +613,26 @@ async def update_memory(
         embedding = await provider.embed_one(new_content)
         embedding_dim = provider.dimension
 
-    updated = await repo.update(
-        parsed_id,
-        content=new_content,
-        embedding=embedding,
-        embedding_dim=embedding_dim,
-        summary=summary,
-        metadata_patch=metadata_patch,
-    )
+    if parsed_scopes is None:
+        updated = await repo.update(
+            parsed_id,
+            content=new_content,
+            embedding=embedding,
+            embedding_dim=embedding_dim,
+            summary=summary,
+            metadata_patch=metadata_patch,
+        )
+    else:
+        updated = await repo.update_with_scopes(
+            parsed_id,
+            tenant=row["tenant"],
+            content=new_content,
+            embedding=embedding,
+            embedding_dim=embedding_dim,
+            summary=summary,
+            metadata_patch=metadata_patch,
+            scopes=parsed_scopes,
+        )
     if not updated:
         return f"memory {memory_id} not found or deleted"
 
@@ -603,6 +664,8 @@ async def update_memory(
         changed.append("summary")
     if metadata_patch is not None:
         changed.append("metadata")
+    if parsed_scopes is not None:
+        changed.append("scopes")
     return f"updated memory {parsed_id} ({', '.join(changed)})"
 
 
@@ -616,6 +679,7 @@ async def recall(
     domain: str | None = None,
     limit: int = 10,
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
+    scopes: list[str] | None = None,
 ) -> str:
     """Search memories using hybrid semantic + keyword search with RRF ranking.
 
@@ -637,10 +701,21 @@ async def recall(
         tenant: filter to a specific project/tenant
         depth_layer: filter to a specific depth layer (core, stable, working, ephemeral)
         subtype: optional memory subcategory filter (for example code_style or workflow)
-        domain: optional bounded-context filter (skill/repo/language; max 50 chars)
+        domain: DEPRECATED single-value axis, superseded by scopes; still honoured
+            for every memory written before scopes existed (max 50 chars)
         limit: max results to return
         preview_chars: max content characters per result (0-1000)
+        scopes: typed applicability filter as "<type>:<key>" strings, for example
+            ["language:python", "repo:acme/api"]. A memory matches when, for every
+            scope type it carries, at least one of its keys is asked for: OR within
+            a type, AND across the types the memory itself carries. A query type the
+            memory does not use imposes nothing, so a memory scoped only to
+            language:python still matches the example. "global:all" always matches,
+            and unscoped memories are excluded whenever any filter is given.
+            Cannot be combined with domain.
     """
+    parsed_scopes = _parse_scopes(domain, scopes)
+
     pg = _get_pg()
     provider = _get_provider()
     t = await _resolve_tenant_for(pg, tenant)
@@ -656,6 +731,7 @@ async def recall(
         subtype=subtype,
         domain=domain,
         limit=limit,
+        scopes=parsed_scopes,
     )
 
     if not results:
@@ -672,10 +748,12 @@ async def recall(
         type_label = r.type if not getattr(r, "subtype", None) else f"{r.type}/{r.subtype}"
         domain = getattr(r, "domain", None)
         domain_label = f" domain={domain}" if domain else ""
+        result_scopes = getattr(r, "scopes", None)
+        scope_label = f" scopes={_format_scopes(result_scopes)}" if result_scopes else ""
         memories.append(
             f"[{r.depth_layer}] ({type_label}) score={r.rrf_score:.4f} "
             f"decay={r.decay_score:.2f} trust={r.trust_score:.2f} "
-            f"tenant={r.tenant}{domain_label} created_at={_format_timestamp(r.created_at)}\n"
+            f"tenant={r.tenant}{domain_label}{scope_label} created_at={_format_timestamp(r.created_at)}\n"
             f"  {preview}\n"
             f"  id={r.id}"
         )
