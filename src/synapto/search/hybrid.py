@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
+
+from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
@@ -209,12 +212,60 @@ def _build_scope_filter(scopes: ScopeSet | None) -> tuple[str, dict[str, Any]]:
     }
 
 
+MAX_METADATA_FILTER_KEYS = 20
+
+# Containment reads a flat mapping of scalars. Nesting is refused rather than
+# passed through: `@>` on a nested object matches sub-objects and treats arrays
+# as subsets, so `{"a": {"b": 1}}` and `{"tags": ["x"]}` mean something subtler
+# than the exact-key equality this filter exists to provide, and a caller would
+# have to know which. One level of scalars has exactly one reading.
+_METADATA_SCALARS = (str, int, float, bool, type(None))
+
+
+class InvalidMetadataFilterError(ValueError):
+    """Raised when a metadata filter cannot be read as exact-key equality."""
+
+
+def validate_metadata_filter(metadata_filter: object) -> dict[str, Any]:
+    """Return the filter if it is a flat mapping of scalars, else explain why not.
+
+    Raises:
+        InvalidMetadataFilterError: the filter is not a mapping, is empty, has a
+            non-string key, carries more than :data:`MAX_METADATA_FILTER_KEYS`
+            entries, or nests a value.
+    """
+    if not isinstance(metadata_filter, Mapping):
+        raise InvalidMetadataFilterError(
+            f"metadata_filter must be a JSON object of key/value pairs, got {type(metadata_filter).__name__}"
+        )
+    if not metadata_filter:
+        raise InvalidMetadataFilterError(
+            "an empty metadata_filter matches every memory — omit the filter instead of passing {}"
+        )
+    if len(metadata_filter) > MAX_METADATA_FILTER_KEYS:
+        raise InvalidMetadataFilterError(
+            f"metadata_filter accepts at most {MAX_METADATA_FILTER_KEYS} keys (got {len(metadata_filter)})"
+        )
+
+    for key, value in metadata_filter.items():
+        if not isinstance(key, str):
+            raise InvalidMetadataFilterError(f"metadata_filter keys must be strings, got {type(key).__name__}")
+        if not isinstance(value, _METADATA_SCALARS):
+            raise InvalidMetadataFilterError(
+                f"metadata_filter value for {key!r} is a {type(value).__name__}; only one level of scalar "
+                "values is accepted, because containment on nested objects and arrays does not mean "
+                "exact-key equality"
+            )
+    return dict(metadata_filter)
+
+
 def _build_memory_filters(
     *,
     depth_layer: str | None = None,
     subtype: str | None = None,
     domain: str | None = None,
     scopes: ScopeSet | None = None,
+    metadata_filter: dict[str, Any] | None = None,
     indent: str,
 ) -> tuple[str, dict[str, Any]]:
     """Build shared optional memory filters.
@@ -236,6 +287,10 @@ def _build_memory_filters(
         filters.append("AND domain = %(domain)s")
         params["domain"] = domain
 
+    if metadata_filter is not None:
+        filters.append("AND metadata @> %(metadata_filter)s::jsonb")
+        params["metadata_filter"] = Jsonb(validate_metadata_filter(metadata_filter))
+
     scope_sql, scope_params = _build_scope_filter(scopes)
     if scope_sql:
         filters.append(scope_sql)
@@ -255,6 +310,7 @@ async def hybrid_search(
     *,
     domain: str | None = None,
     scopes: ScopeSet | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> list[SearchResult]:
     """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR.
 
@@ -273,6 +329,7 @@ async def hybrid_search(
         subtype=subtype,
         domain=domain,
         scopes=scopes,
+        metadata_filter=metadata_filter,
         indent="      ",
     )
 
@@ -355,6 +412,7 @@ async def vector_search(
     *,
     domain: str | None = None,
     scopes: ScopeSet | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> list[SearchResult]:
     """Pure vector similarity search (no keyword component).
 
@@ -366,6 +424,7 @@ async def vector_search(
         subtype=subtype,
         domain=domain,
         scopes=scopes,
+        metadata_filter=metadata_filter,
         indent="  ",
     )
 
@@ -405,3 +464,52 @@ async def vector_search(
         )
         for row in rows
     ]
+
+
+_COUNT_QUERY = """
+SELECT count(*) AS total
+FROM memories
+WHERE deleted_at IS NULL
+  AND tenant = %(tenant)s
+  {filters}
+"""
+
+
+async def count_memories(
+    client: PostgresClient,
+    *,
+    tenant: str = "default",
+    depth_layer: str | None = None,
+    subtype: str | None = None,
+    domain: str | None = None,
+    scopes: ScopeSet | None = None,
+    metadata_filter: dict[str, Any] | None = None,
+) -> int:
+    """Count every memory matching the filters, independent of any page size.
+
+    Deliberately not a variant of :func:`hybrid_search`. A hybrid result is a
+    relevance-ranked page whose candidate set comes from vector and full-text
+    similarity, so "how many did that match" is not a well-defined number.
+    Aggregation asks a different question — how many memories carry this exact
+    key — and that one has an exact answer.
+
+    It shares :func:`_build_memory_filters` with the search rather than
+    restating the predicates, so a count and a page can never disagree about
+    what "matching" means. That was the whole failure being replaced: a
+    threshold computed from a page is a lower bound that stops being one as the
+    store grows, while looking like a count the entire time.
+
+    Complexity: one indexed aggregate. The GIN index added in migration 008
+    serves the containment predicate.
+    """
+    filter_sql, filter_params = _build_memory_filters(
+        depth_layer=depth_layer,
+        subtype=subtype,
+        domain=domain,
+        scopes=scopes,
+        metadata_filter=metadata_filter,
+        indent="  ",
+    )
+    params = {"tenant": tenant, **filter_params}
+    row = await client.execute_one(_COUNT_QUERY.format(filters=filter_sql), params)
+    return int(row["total"]) if row else 0

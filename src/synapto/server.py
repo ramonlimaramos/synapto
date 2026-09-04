@@ -32,7 +32,12 @@ from synapto.repositories.relations import RelationRepository
 from synapto.repositories.tenants import TenantAliasRepository
 from synapto.scopes import InvalidScopeError, ScopeSet, reject_conflicting_scope_arguments
 from synapto.search.graph import traverse
-from synapto.search.hybrid import hybrid_search
+from synapto.search.hybrid import (
+    InvalidMetadataFilterError,
+    count_memories,
+    hybrid_search,
+    validate_metadata_filter,
+)
 from synapto.telemetry import (
     MetricsRegistry,
     PostgresMetricsBackend,
@@ -680,6 +685,7 @@ async def recall(
     limit: int = 10,
     preview_chars: int = DEFAULT_RECALL_PREVIEW_CHARS,
     scopes: list[str] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> str:
     """Search memories using hybrid semantic + keyword search with RRF ranking.
 
@@ -713,8 +719,18 @@ async def recall(
             language:python still matches the example. "global:all" always matches,
             and unscoped memories are excluded whenever any filter is given.
             Cannot be combined with domain.
+        metadata_filter: exact-key filter over a memory's metadata, for example
+            {"failure_class": "missing_docstring"}. One level of scalar values;
+            a memory matches when its metadata contains every pair. When given,
+            the result reports the true number of matches, which is not capped
+            by limit — that count is what an occurrence threshold needs.
     """
     parsed_scopes = _parse_scopes(domain, scopes)
+    if metadata_filter is not None:
+        try:
+            validate_metadata_filter(metadata_filter)
+        except InvalidMetadataFilterError as exc:
+            raise ToolError(str(exc)) from exc
 
     pg = _get_pg()
     provider = _get_provider()
@@ -732,6 +748,7 @@ async def recall(
         domain=domain,
         limit=limit,
         scopes=parsed_scopes,
+        metadata_filter=metadata_filter,
     )
 
     if not results:
@@ -757,7 +774,19 @@ async def recall(
             f"  {preview}\n"
             f"  id={r.id}"
         )
-    body = f"{load_prompt('recall_preamble')}\nRecalled {len(results)} memories:\n\n" + "\n\n".join(memories)
+    headline = f"Recalled {len(results)} memories"
+    if metadata_filter is not None or parsed_scopes is not None:
+        total = await count_memories(
+            pg,
+            tenant=t,
+            depth_layer=depth_layer,
+            subtype=subtype,
+            domain=domain,
+            scopes=parsed_scopes,
+            metadata_filter=metadata_filter,
+        )
+        headline += f" of {total} matching the filters"
+    body = f"{load_prompt('recall_preamble')}\n{headline}:\n\n" + "\n\n".join(memories)
     return _wrap_system_reminder(body)
 
 
