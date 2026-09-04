@@ -34,8 +34,9 @@ import zipfile
 import zlib
 from pathlib import Path
 
-# The exact bundle v0.5.1 must ship. 005/006 belong to the unreleased v0.6 line
-# and must never appear here.
+# The exact bundle this line ships, kept in step with EXPECTED in
+# tests/unit/test_migration_resources.py. Adding a migration without updating
+# both is what shipped a wheel nobody had verified.
 EXPECTED_MIGRATIONS = {
     "001_initial.sql": "17ea18399343f8db",
     "002_add_hrr.sql": "9ed15ff823555af5",

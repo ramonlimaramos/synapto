@@ -1,12 +1,17 @@
 name: release
 
-# Maintenance-branch release workflow for the v0.5 line.
+# Publishes whatever version `main` already declares.
 #
-# Deliberately narrower than the workflow on main. The generic version accepted
-# any ref and any bump type, and granted contents:write plus id-token:write to a
-# single job that also installed dependencies, built, and ran a third-party
-# action. Selecting main + patch there would have published unreleased main code
-# as 0.5.1. This one publishes exactly what release/0.5 already contains.
+# The workflow deliberately does not bump anything. A version is a reviewed
+# decision: it lands through a pull request together with the CHANGELOG entry
+# and the regenerated uv.lock, and this workflow only ships what that PR
+# agreed on. That separation is what gives the version-consistency assert
+# below any meaning — a job that writes the version and then checks the
+# version it just wrote verifies nothing.
+#
+# The v0.5 maintenance line hardened this pipeline into four jobs so that
+# building never holds the permissions that mutate the outside world. That
+# split is kept; only the hard-pinned ref and version constant are gone.
 
 on:
   workflow_dispatch:
@@ -16,49 +21,49 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-v0.5
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  EXPECTED_REF: refs/heads/release/0.5
-  EXPECTED_VERSION: "0.5.1"
-
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       version: ${{ steps.assert.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - name: check admin permission
+        uses: actions-cool/check-user-permission@v2
+        id: check
+        with:
+          require: admin
+          username: ${{ github.triggering_actor }}
 
-      # Fails before anything is built, so a wrong ref or a drifted version
-      # cannot reach the publishing jobs at all.
+      - name: abort if not admin
+        if: steps.check.outputs.require-result != 'true'
+        run: |
+          echo "error: only repo admins can create releases"
+          exit 1
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Everything knowable before a build happens here, so a drifted version or
+      # a colliding tag costs a few seconds instead of a published artifact that
+      # cannot be withdrawn. The logic lives in a script rather than in this
+      # file so that its failure paths are covered by the test suite.
       - name: assert release contract
         id: assert
-        run: |
-          set -euo pipefail
+        run: python3 scripts/assert_release_contract.py
 
-          if [ "${GITHUB_REF}" != "${EXPECTED_REF}" ]; then
-            echo "error: this workflow only releases ${EXPECTED_REF}, got ${GITHUB_REF}"
-            exit 1
-          fi
-
-          pyproject_version=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
-          init_version=$(grep -m1 '__version__ = ' src/synapto/__init__.py | cut -d'"' -f2)
-          lock_version=$(awk '/^name = "synapto"$/{found=1; next} found && /^version = /{print; exit}' uv.lock | cut -d'"' -f2)
-
-          for pair in "pyproject.toml:${pyproject_version}" "__init__.py:${init_version}" "uv.lock:${lock_version}"; do
-            file="${pair%%:*}"; value="${pair#*:}"
-            if [ "${value}" != "${EXPECTED_VERSION}" ]; then
-              echo "error: ${file} declares '${value}', expected '${EXPECTED_VERSION}'"
-              exit 1
-            fi
-          done
-
-          echo "version=${EXPECTED_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "release contract verified: ${EXPECTED_REF} at ${EXPECTED_VERSION}"
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
 
       - name: install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -72,8 +77,9 @@ jobs:
       - name: build package
         run: uv run python -m build
 
-      # The gate that makes this release line different: every artifact from
-      # 0.1.0 to 0.5.0 shipped without migrations and would have failed here.
+      # The gate the v0.5.1 line added: every artifact from 0.1.0 to 0.5.0
+      # shipped without migrations and would have failed here. Both
+      # distributions are checked, because the sdist is publishable too.
       - name: verify packaged migrations
         run: uv run python scripts/verify_wheel.py dist/*.whl dist/*.tar.gz
 
@@ -89,7 +95,7 @@ jobs:
   # no matching source tag and no way to undo it. Git, by contrast, is
   # recoverable — so the mutation that can be fixed happens first.
   tag:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     # First external mutation, so it sits behind the protected release gate.
     environment: release
@@ -104,7 +110,7 @@ jobs:
       # at this exact commit. Anything else means the tag names different code.
       - name: create tag
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           tag="v${VERSION}"
@@ -124,7 +130,7 @@ jobs:
           fi
 
   publish:
-    needs: [build, tag]
+    needs: [prepare, build, tag]
     runs-on: ubuntu-latest
     # Trusted Publishing resolves its identity through this environment.
     environment: release
@@ -144,7 +150,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   github_release:
-    needs: [build, publish]
+    needs: [prepare, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -160,16 +166,21 @@ jobs:
       - name: create github release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: "v${{ needs.build.outputs.version }}"
-          name: "v${{ needs.build.outputs.version }}"
+          tag_name: "v${{ needs.prepare.outputs.version }}"
+          name: "v${{ needs.prepare.outputs.version }}"
           files: dist/*
           body: |
             ## what's changed
 
-            see [CHANGELOG.md](https://github.com/ramonlimaramos/synapto/blob/v${{ needs.build.outputs.version }}/CHANGELOG.md) for details.
+            see [CHANGELOG.md](https://github.com/ramonlimaramos/synapto/blob/v${{ needs.prepare.outputs.version }}/CHANGELOG.md) for details.
 
             ### install / upgrade
 
             ```bash
-            pip install synapto==${{ needs.build.outputs.version }}
+            pip install synapto==${{ needs.prepare.outputs.version }}
+            ```
+
+            or with auto-updates (recommended):
+            ```json
+            { "command": "uvx", "args": ["--refresh", "synapto", "serve"] }
             ```
