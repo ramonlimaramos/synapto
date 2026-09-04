@@ -6,8 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-04
+
+### Added
+
+- **typed scopes persisted and queried end to end** (groundwork for #45/#46/#47, none of which this closes): `MemoryRepository.create` accepts a `ScopeSet` and commits the memory with its memberships in one transaction; `update_with_scopes` updates fields and memberships in one transaction; `replace_scopes`/`clear_scopes` authorize the parent by tenant and active state under a `FOR UPDATE` lock before reaching the ID-only `ScopeRepository`, with `None` preserving, `[]` clearing, and a non-empty set replacing. Supplying `domain` and `scopes` together is rejected. `get_by_id`/`get_by_ids` carry ordered scopes, with `get_by_ids` normalizing ids to UUID and returning rows in the requested order, batched so a result page costs one extra query rather than one per memory. `hybrid_search` and `vector_search` accept a `scopes` filter implementing the Option B applicability rule — OR within a scope type, AND across the types a memory carries, extra query types imposing nothing, `global:all` always matching, unscoped memories excluded whenever a filter is given — expressed as `EXISTS`/`NOT EXISTS` so ranking is never duplicated. Filters are validated before embedding, so an invalid scope costs no model call and no query. `SearchResult` carries its scopes on both search paths, and `ScopeSet.to_payload`/`from_payload` give caches a deterministic representation that still reads pre-scope entries.
+- **typed memory-scope contract** (groundwork for #45/#46/#47, none of which this closes): a new `memory_scopes` table gives memories an N:N applicability axis of typed `(scope_type, scope_key)` pairs — `repo:owner/name`, `language:python`, `skill:jerry-workday` — superseding the scalar `domain` string. `ScopeRef` and `ScopeSet` are immutable, deterministically ordered value objects that validate the six accepted types, require `global` to carry only `all` and never combine with other scopes, require `repo` keys in canonical `owner/repo` form, and cap a request at 20 unique scopes. Keys must arrive canonical (ASCII lowercase, already trimmed) and are rejected rather than silently rewritten, with the error naming the canonical spelling when one exists. `ScopeRepository` replaces and clears membership atomically under a `FOR UPDATE` lock on the parent memory, exposes connection-scoped primitives so a caller can commit a memory and its scopes in one transaction, and reads one or many memories' scopes ordered by `(scope_type, scope_key)`. Migration 005 and existing `domain` values are untouched; MCP tools, `MemoryRepository`, search, and the CLI are unchanged in this PR.
+- **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
+- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
+- **typed memory-scope contract** (groundwork for #45/#46/#47, none of which this closes): a new `memory_scopes` table gives memories an N:N applicability axis of typed `(scope_type, scope_key)` pairs — `repo:owner/name`, `language:python`, `skill:jerry-workday` — superseding the scalar `domain` string. `ScopeRef` and `ScopeSet` are immutable, deterministically ordered value objects that validate the six accepted types, require `global` to carry only `all` and never combine with other scopes, require `repo` keys in canonical `owner/repo` form, and cap a request at 20 unique scopes. Keys must arrive canonical (ASCII lowercase, already trimmed) and are rejected rather than silently rewritten, with the error naming the canonical spelling when one exists. `ScopeRepository` replaces and clears membership atomically under a `FOR UPDATE` lock on the parent memory, exposes connection-scoped primitives so a caller can commit a memory and its scopes in one transaction, and reads one or many memories' scopes ordered by `(scope_type, scope_key)`. Migration 005 and existing `domain` values are untouched; MCP tools, `MemoryRepository`, search, and the CLI are unchanged in this PR.
+- **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
+- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
+- **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
+- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
+- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
+
 ### Changed
 
+- **The 0.5 maintenance line is back on `main`.** `v0.5.1` was cut from
+  `release/0.5` and never merged back, so each line held work the other
+  lacked: `main` had the domain and typed-scope contracts without the
+  packaging hardening, and the published wheel had the hardening without the
+  scopes. Migrations `005` and `006` moved into the packaged
+  `src/synapto/_migrations/`, which is what makes them travel in a
+  distribution at all — without this, 0.6.0 would have shipped the same empty
+  bundle that 0.1.0 through 0.5.0 did. Existing migration checksums are
+  unchanged, so no database is orphaned. CI keeps `main`'s unexempted audit
+  and its isolated test DSN, and adopts the release line's `package` job,
+  which verifies both built artifacts rather than the source tree.
 - **The workflow no longer writes the version it publishes** (#78). The former
   `bump_type` input edited `pyproject.toml` and `src/synapto/__init__.py` but
   not `uv.lock`, so any `patch`/`minor`/`major` dispatch produced `X`, `X`,
@@ -35,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   `id-token: write` out of the building job, and tagging ahead of the
   immutable PyPI upload. The ref pin, the version constant, and the
   `release-v0.5` concurrency group are gone.
+- **positional-argument compatibility restored** for `MemoryRepository.create`, `hybrid_search`, and `vector_search`. The scalar `domain` parameter had been inserted mid-signature — between `subtype` and `summary`, and ahead of `limit` — so a positional caller's summary or limit was silently rebound to it. `domain` and the new `scopes` are now keyword-only, after every established positional parameter.
 
 ### Security
 
@@ -45,43 +72,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   `safetensors` to `0.8.0`. `sentence-transformers` stays at `5.4.0` and the
   embedding model still loads at `dim=384`, so no stored vector is affected.
   The audit continues to run with no exemptions.
-
-## [0.6.0] - 2026-08-27
-
-### Changed
-
-- **The 0.5 maintenance line is back on `main`.** `v0.5.1` was cut from
-  `release/0.5` and never merged back, so each line held work the other
-  lacked: `main` had the domain and typed-scope contracts without the
-  packaging hardening, and the published wheel had the hardening without the
-  scopes. Migrations `005` and `006` moved into the packaged
-  `src/synapto/_migrations/`, which is what makes them travel in a
-  distribution at all — without this, 0.6.0 would have shipped the same empty
-  bundle that 0.1.0 through 0.5.0 did. Existing migration checksums are
-  unchanged, so no database is orphaned. CI keeps `main`'s unexempted audit
-  and its isolated test DSN, and adopts the release line's `package` job,
-  which verifies both built artifacts rather than the source tree.
-
-### Added
-
-- **typed scopes persisted and queried end to end** (groundwork for #45/#46/#47, none of which this closes): `MemoryRepository.create` accepts a `ScopeSet` and commits the memory with its memberships in one transaction; `update_with_scopes` updates fields and memberships in one transaction; `replace_scopes`/`clear_scopes` authorize the parent by tenant and active state under a `FOR UPDATE` lock before reaching the ID-only `ScopeRepository`, with `None` preserving, `[]` clearing, and a non-empty set replacing. Supplying `domain` and `scopes` together is rejected. `get_by_id`/`get_by_ids` carry ordered scopes, with `get_by_ids` normalizing ids to UUID and returning rows in the requested order, batched so a result page costs one extra query rather than one per memory. `hybrid_search` and `vector_search` accept a `scopes` filter implementing the Option B applicability rule — OR within a scope type, AND across the types a memory carries, extra query types imposing nothing, `global:all` always matching, unscoped memories excluded whenever a filter is given — expressed as `EXISTS`/`NOT EXISTS` so ranking is never duplicated. Filters are validated before embedding, so an invalid scope costs no model call and no query. `SearchResult` carries its scopes on both search paths, and `ScopeSet.to_payload`/`from_payload` give caches a deterministic representation that still reads pre-scope entries.
-- **typed memory-scope contract** (groundwork for #45/#46/#47, none of which this closes): a new `memory_scopes` table gives memories an N:N applicability axis of typed `(scope_type, scope_key)` pairs — `repo:owner/name`, `language:python`, `skill:jerry-workday` — superseding the scalar `domain` string. `ScopeRef` and `ScopeSet` are immutable, deterministically ordered value objects that validate the six accepted types, require `global` to carry only `all` and never combine with other scopes, require `repo` keys in canonical `owner/repo` form, and cap a request at 20 unique scopes. Keys must arrive canonical (ASCII lowercase, already trimmed) and are rejected rather than silently rewritten, with the error naming the canonical spelling when one exists. `ScopeRepository` replaces and clears membership atomically under a `FOR UPDATE` lock on the parent memory, exposes connection-scoped primitives so a caller can commit a memory and its scopes in one transaction, and reads one or many memories' scopes ordered by `(scope_type, scope_key)`. Migration 005 and existing `domain` values are untouched; MCP tools, `MemoryRepository`, search, and the CLI are unchanged in this PR.
-- **domain-scoped memory contract** (#45, #46, #47 foundation): memories gain a first-class nullable `domain` column (skill/repo/language bounded context) with a partial `(tenant, domain)` index. `MemoryRepository.create` persists domain; hybrid and vector search accept an injection-safe `domain` filter; `get_memory`/`get_memories`/`recall` output renders `domain` when set; CLI `search --domain`, `export`, and `import` preserve the field. Existing memories without domain keep working; MCP tool input parameters are unchanged (exposed in a follow-up PR).
-- **domain-aware `remember` and `recall` MCP tools** (#45, #46 foundation): both tools accept an optional `domain` parameter (validated, max 50 chars) so agents can store `domain=python` / `domain=jerry-workday` context and recall it by bounded context without semantic query guessing. Tool descriptions and server instructions now guide agents to route durable skill/domain knowledge into Synapto with `domain=`. `alwaysLoad` stays limited to `remember`/`recall`.
-
-### Fixed
-
-- **positional-argument compatibility restored** for `MemoryRepository.create`, `hybrid_search`, and `vector_search`. The scalar `domain` parameter had been inserted mid-signature — between `subtype` and `summary`, and ahead of `limit` — so a positional caller's summary or limit was silently rebound to it. `domain` and the new `scopes` are now keyword-only, after every established positional parameter.
-
-### Security
-
+- **cryptography constrained to >=50.0.0** to fix CVE-2026-69247, which turned main CI red immediately after the PR-2 merge. Pulled transitively by authlib/joserfc.
+- **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
+- **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
 - Raised the dev-environment `pip` floor to `26.2` for PYSEC-2026-3721. The
   audit now runs with no exemptions on this line: the `setuptools>=83` and
   torch pins that forced two temporary exclusions on the v0.5 maintenance
   branch are already satisfied here.
-
-- **cryptography constrained to >=50.0.0** to fix CVE-2026-69247, which turned main CI red immediately after the PR-2 merge. Pulled transitively by authlib/joserfc.
-- **dependency audit fixes** for advisories that appeared after v0.5.0: `click>=8.3.3` (PYSEC-2026-2132), `mcp>=1.28.1` (PYSEC-2026-3481/3482/3483, pulled transitively by fastmcp), and `setuptools>=83.0.0` (PYSEC-2026-3447). The setuptools floor also moves `torch` to 2.13, which resolves CVE-2025-3000 — so the `--ignore-vuln CVE-2025-3000` exemption was removed and CI now audits the full dependency tree with no exclusions.
 
 ## [0.5.1] - 2026-08-07
 
