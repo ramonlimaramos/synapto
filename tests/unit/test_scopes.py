@@ -206,7 +206,7 @@ class TestScopeSet:
 
         assert len(ScopeSet.parse(items).scopes) == MAX_SCOPES
 
-    @pytest.mark.parametrize("payload", ["not-a-list", 7, None, [7], ["language:python"], [{"type": "language"}]])
+    @pytest.mark.parametrize("payload", ["not-a-list", 7, None, [7], ["python"], [{"type": "language"}]])
     def test_rejects_malformed_payloads(self, payload):
         with pytest.raises(InvalidScopeError):
             ScopeSet.parse(payload)
@@ -376,3 +376,59 @@ class TestSuggestionsUseTheActiveGrammar:
     def test_error_names_the_grammar_that_was_broken(self):
         with pytest.raises(InvalidScopeError, match="repository owner"):
             ScopeRef("repo", "OWNER/repo")
+
+
+class TestCompactStringForm:
+    """The spelling a tool argument arrives in: ``"<type>:<key>"``.
+
+    A transport form, not a second vocabulary — every rule about accepted types
+    and canonical keys is the one already in force, so these tests are about the
+    split and nothing else.
+    """
+
+    def test_a_compact_scope_parses_to_the_same_ref_as_a_mapping(self):
+        assert ScopeSet.parse(["language:python"]) == ScopeSet.parse([{"type": "language", "key": "python"}])
+
+    def test_a_repo_key_keeps_its_slash(self):
+        parsed = ScopeSet.parse(["repo:acme/api"])
+
+        assert parsed.scopes == (ScopeRef("repo", "acme/api"),)
+
+    def test_the_split_takes_only_the_first_separator(self):
+        """A key may legitimately contain ':'; the type may not."""
+        with pytest.raises(InvalidScopeError, match="not canonical"):
+            ScopeSet.parse(["language:py:thon"])
+
+    def test_compact_and_mapping_forms_mix_in_one_request(self):
+        parsed = ScopeSet.parse(["language:python", {"type": "repo", "key": "acme/api"}])
+
+        assert parsed.scopes == (ScopeRef("language", "python"), ScopeRef("repo", "acme/api"))
+
+    def test_a_scope_without_a_type_is_rejected_not_guessed(self):
+        with pytest.raises(InvalidScopeError, match="missing its type"):
+            ScopeSet.parse(["python"])
+
+    def test_the_rejection_lists_the_accepted_types(self):
+        with pytest.raises(InvalidScopeError, match="global, language, product, repo, skill, workflow"):
+            ScopeSet.parse(["python"])
+
+    def test_an_unknown_type_is_still_rejected(self):
+        with pytest.raises(InvalidScopeError, match="unknown scope type"):
+            ScopeSet.parse(["dialect:python"])
+
+    def test_a_non_canonical_key_is_still_rejected_with_a_suggestion(self):
+        with pytest.raises(InvalidScopeError, match="did you mean 'python'"):
+            ScopeSet.parse(["language:Python"])
+
+    def test_global_exclusivity_survives_the_compact_form(self):
+        with pytest.raises(InvalidScopeError, match="cannot be combined"):
+            ScopeSet.parse(["global:all", "language:python"])
+
+    def test_an_empty_key_is_rejected(self):
+        with pytest.raises(InvalidScopeError, match="must not be empty"):
+            ScopeSet.parse(["language:"])
+
+    def test_duplicates_collapse_across_both_forms(self):
+        parsed = ScopeSet.parse(["language:python", {"type": "language", "key": "python"}])
+
+        assert len(parsed) == 1

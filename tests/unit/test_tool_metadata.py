@@ -127,9 +127,39 @@ async def test_recall_description_documents_domain_filter():
 
     for phrase in (
         "domain to narrow to a skill/repo/language bounded context",
-        "domain: optional bounded-context filter (skill/repo/language; max 50 chars)",
+        "domain: DEPRECATED single-value axis, superseded by scopes",
     ):
         assert phrase in recall.description
+
+
+async def test_recall_description_documents_the_scope_filter():
+    """Deprecating domain is only useful if the replacement is discoverable."""
+    recall = await mcp.get_tool("recall")
+
+    for phrase in (
+        'scopes: typed applicability filter as "<type>:<key>" strings',
+        "at least one of its keys is asked for",
+        "AND across the types the memory itself carries",
+        "imposes nothing",
+        '"global:all" always matches',
+        "unscoped memories are excluded",
+        "Cannot be combined with domain",
+    ):
+        assert phrase in recall.description
+
+
+async def test_scopes_parameter_exposed_in_tool_input_schemas():
+    """An implemented axis no MCP client can see is the bug this closes."""
+    for name in ("remember", "recall", "update_memory"):
+        tool = await mcp.get_tool(name)
+        assert "scopes" in tool.parameters["properties"], f"{name!r} must expose a scopes input parameter"
+
+
+async def test_domain_is_deprecated_but_still_accepted():
+    """Every memory written so far uses domain; removing it would strand them."""
+    for name in ("remember", "recall"):
+        tool = await mcp.get_tool(name)
+        assert "domain" in tool.parameters["properties"]
 
 
 async def test_domain_parameter_exposed_in_tool_input_schemas():

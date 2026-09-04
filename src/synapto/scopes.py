@@ -296,6 +296,8 @@ class ScopeSet:
     def _parse_item(item: object) -> ScopeRef:
         if isinstance(item, ScopeRef):
             return item
+        if isinstance(item, str):
+            return ScopeSet._parse_compact(item)
         if not isinstance(item, Mapping):
             raise InvalidScopeError(f"each scope must be an object with 'type' and 'key', got {type(item).__name__}")
 
@@ -310,3 +312,26 @@ class ScopeSet:
             raise InvalidScopeError(f"scope is missing required field(s): {', '.join(sorted(missing))}")
 
         return ScopeRef.parse(item["type"], item["key"])
+
+    @staticmethod
+    def _parse_compact(item: str) -> ScopeRef:
+        """Read the ``"<type>:<key>"`` spelling a tool argument arrives in.
+
+        A transport form, not a second vocabulary: it splits once on the first
+        ``:`` and hands both halves to :meth:`ScopeRef.parse`, so every rule
+        about accepted types and canonical keys is the one already in force.
+        Splitting once is what lets ``repo`` keys keep their ``/`` and any
+        future key keep a ``:``.
+
+        A missing separator is rejected rather than guessed at: ``"python"``
+        could mean a language or a skill, and picking one would silently scope a
+        memory somewhere the caller never asked for.
+        """
+        scope_type, separator, scope_key = item.partition(":")
+        if not separator:
+            accepted = ", ".join(sorted(SCOPE_TYPES))
+            raise InvalidScopeError(
+                f"scope {item!r} is missing its type — write it as '<type>:<key>', "
+                f"where type is one of: {accepted}"
+            )
+        return ScopeRef.parse(scope_type, scope_key)
