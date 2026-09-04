@@ -280,8 +280,21 @@ async def test_remember_rejects_empty_domain_before_database_access():
         await server.remember("content", domain="   ")
 
 
+class _UnmergedTenants:
+    """A pg stand-in that answers only the tenant-alias lookup.
+
+    Tenant resolution consults ``tenant_aliases`` before every tool runs, so
+    these tests can no longer pass a bare ``object()``. Returning ``None``
+    means "this tenant was never merged", which is the condition each test
+    below already assumed.
+    """
+
+    async def execute_one(self, sql, params=None):
+        return None
+
+
 async def test_recall_rejects_overlong_domain(monkeypatch):
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
 
@@ -456,7 +469,7 @@ async def test_recall_preview_zero_uses_explicit_elision_marker(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
     monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
@@ -474,7 +487,7 @@ async def test_recall_passes_subtype_filter_to_hybrid_search(monkeypatch):
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
     monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
@@ -494,7 +507,7 @@ async def test_recall_passes_domain_filter_to_hybrid_search(monkeypatch):
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
     monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
@@ -525,7 +538,7 @@ async def test_recall_renders_domain_when_set(monkeypatch):
     async def fake_hybrid_search(*args, **kwargs):
         return [_search_result_stub(domain="python")]
 
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
     monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)
@@ -539,7 +552,7 @@ async def test_recall_omits_domain_when_absent(monkeypatch):
     async def fake_hybrid_search(*args, **kwargs):
         return [_search_result_stub()]
 
-    monkeypatch.setattr(server, "_pg", object())
+    monkeypatch.setattr(server, "_pg", _UnmergedTenants())
     monkeypatch.setattr(server, "_provider", object())
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
     monkeypatch.setattr(server, "hybrid_search", fake_hybrid_search)

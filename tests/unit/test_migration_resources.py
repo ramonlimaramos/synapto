@@ -37,6 +37,7 @@ EXPECTED = {
     "004_add_memory_subtype.sql": "9ac7f71c0e8c0300",
     "005_add_memory_domain.sql": "1ef6f84fcbc2fd65",
     "006_add_memory_scopes.sql": "b1d9bc60fed19ba0",
+    "007_add_tenant_aliases.sql": "f959c16975896245",
 }
 
 MIGRATION_BODY = "-- migrate:up\nSELECT 1;\n-- migrate:down\nSELECT 2;\n"
@@ -63,7 +64,7 @@ class TestBundledDiscovery:
         assert names == set(EXPECTED)
 
     def test_versions_are_sequential(self):
-        assert [m.version for m in discover_migrations()] == [1, 2, 3, 4, 5, 6]
+        assert [m.version for m in discover_migrations()] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_migrations_package_is_importable(self):
         from importlib import resources

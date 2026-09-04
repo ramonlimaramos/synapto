@@ -29,6 +29,7 @@ from synapto.prompts import load_prompt
 from synapto.repositories.entities import EntityRepository
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
+from synapto.repositories.tenants import TenantAliasRepository
 from synapto.search.graph import traverse
 from synapto.search.hybrid import hybrid_search
 from synapto.telemetry import (
@@ -37,6 +38,7 @@ from synapto.telemetry import (
     instrumented_tool,
     set_registry,
 )
+from synapto.tenants import InvalidTenantError, resolve_tenant
 
 logger = logging.getLogger("synapto.server")
 
@@ -242,6 +244,38 @@ def _parse_memory_ids(memory_ids: list[str]) -> tuple[list[UUID], list[str]]:
     return valid_ids, invalid_ids
 
 
+async def _resolve_tenant_for(pg: PostgresClient, tenant: str | None) -> str:
+    """Resolve the tenant one tool call operates on.
+
+    Replaces the ``tenant or _config.default_tenant`` that every tool used to
+    repeat. Two things happen that did not before.
+
+    *Derivation.* With no explicit tenant, the tenant comes from the server
+    process's working directory — its git ``origin`` remote, as ``owner/name``.
+    A server launched inside a checkout therefore partitions memories by that
+    repository without any caller naming it. A server launched outside one falls
+    through to the configured default exactly as before, so nothing that works
+    today stops working.
+
+    *Alias resolution, on reads and writes alike.* Following an alias on a read
+    is what keeps a folded tenant's memories reachable. Following it on a write
+    matters just as much and is easier to miss: writing under a spelling that
+    was merged away would re-fragment the partition the merge just consolidated.
+    This is not the silent repair the module refuses — an alias is a decision a
+    human already made and recorded, not a guess about what the caller meant.
+
+    Raises:
+        ToolError: an explicit tenant that is not canonical, carrying the
+            canonical spelling when one exists.
+    """
+    try:
+        resolved = resolve_tenant(tenant, configured=getattr(_config, "default_tenant", None))
+    except InvalidTenantError as exc:
+        raise ToolError(str(exc)) from exc
+
+    return await TenantAliasRepository(pg).resolve(resolved)
+
+
 mcp = FastMCP("synapto", instructions=SERVER_INSTRUCTIONS, lifespan=_lifespan)
 
 
@@ -438,7 +472,7 @@ async def remember(
 
     pg = _get_pg()
     provider = _get_provider()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
     _validate_memory_fields(tenant=t)
     repo = MemoryRepository(pg)
 
@@ -609,7 +643,7 @@ async def recall(
     """
     pg = _get_pg()
     provider = _get_provider()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
     _validate_memory_fields(subtype=subtype, domain=domain)
     preview_chars = max(0, min(preview_chars, MAX_RECALL_PREVIEW_CHARS))
 
@@ -767,7 +801,7 @@ async def relate(
     """
     pg = _get_pg()
     provider = _get_provider()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
 
     await create_entity(pg, from_entity, "concept", t, provider=provider)
     await create_entity(pg, to_entity, "concept", t, provider=provider)
@@ -813,7 +847,7 @@ async def graph_query(
         tenant: project/tenant scope
     """
     pg = _get_pg()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
 
     rtypes = relation_types.split(",") if relation_types else None
     nodes = await traverse(pg, entity, t, max_hops=hops, relation_types=rtypes)
@@ -845,7 +879,7 @@ async def list_entities_tool(
         limit: max entities to return
     """
     pg = _get_pg()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
     repo = EntityRepository(pg)
 
     entities = await repo.list(t, entity_type=entity_type, limit=limit)
@@ -942,7 +976,7 @@ async def find_contradictions(tenant: str | None = None, threshold: float = 0.3)
         threshold: minimum contradiction score to report (0.0-1.0)
     """
     pg = _get_pg()
-    t = tenant or _config.default_tenant
+    t = await _resolve_tenant_for(pg, tenant)
 
     results = await hrr_contradict(pg, tenant=t, threshold=threshold)
     if not results:

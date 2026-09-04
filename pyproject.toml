@@ -111,7 +111,18 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
-skips = ["B101"]  # allow assert in non-test code (used in type narrowing)
+skips = [
+    "B101",  # allow assert in non-test code (used in type narrowing)
+    # B404/B603 cover the single subprocess call in synapto.tenants, which reads
+    # a git remote to derive the tenant. The argv is built entirely in-process
+    # (["git", "-C", <cwd>, "remote", "get-url", "origin"]), never reaches a
+    # shell, and carries no caller-supplied element in an executable position —
+    # <cwd> is a path argument. The risk both rules describe is command
+    # injection through an interpolated string, which this call shape cannot
+    # express.
+    "B404",  # importing subprocess is not itself a finding
+    "B603",  # subprocess without shell=True is the safe form, not the unsafe one
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

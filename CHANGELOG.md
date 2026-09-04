@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **the tenant is derived from a resolved location instead of supplied by the
+  caller** (#74). `remember(tenant=...)` accepted any string while the tenant is
+  a hard partition key, so a memory written under one spelling was invisible to
+  every read using another — silently, in both directions. The store had
+  accumulated 29 tenants for about a dozen projects. `resolve_tenant()` now
+  derives the tenant from the working directory's git `origin` remote as
+  canonical `owner/name`, falling back to configuration and then `default`; an
+  explicit tenant becomes an override that must arrive canonical and is
+  rejected, never repaired, with the error naming the canonical spelling. The
+  same resolution serves the MCP tools and the CLI, so `synapto search` and
+  `recall` cannot disagree about which partition they read.
+- **`tenant_aliases`** (migration `007`) records superseded spellings, so a
+  tenant folded into another stays reachable. Resolution is exactly one hop:
+  `TenantAliasRepository` refuses, under a lock, both directions of a chain,
+  which keeps every read a single indexed lookup and makes a cycle impossible
+  to create. Aliases are followed on writes as well as reads — writing under a
+  spelling that was merged away would re-fragment what the merge consolidated.
+- **`synapto maintain --merge-tenants`** reports how the stored tenants would
+  collapse, and `--dry-run` is the default. Grouping is deterministic and
+  purely lexical: identical-after-normalization spellings merge confidently, a
+  single `owner/name` spelling among unqualified siblings is proposed for
+  review, and a name claimed by two owners is printed and skipped rather than
+  guessed at. Applying the plan moves real memories between partitions, so the
+  canonical spelling is a human decision the tool declines to make.
+
+### Changed
+
+- **an absent tenant is no longer always `default`.** This is the intended
+  behaviour change of #74 and it is visible: a process running inside a
+  checkout now resolves that repository's `owner/name`. Memories previously
+  written under a different spelling of the same project are unreachable until
+  an alias records the merge — which is what `--merge-tenants` exists to
+  arrange, and why it should be run before relying on the new default.
+- **`bandit` skips `B404` and `B603`** for the single `subprocess` call that
+  reads the git remote. The argv is built in-process, never reaches a shell,
+  and carries no caller-supplied element in an executable position.
+
 ## [0.6.0] - 2026-09-04
 
 ### Added
