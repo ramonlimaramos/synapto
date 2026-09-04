@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- **The workflow no longer writes the version it publishes** (#78). The former
+  `bump_type` input edited `pyproject.toml` and `src/synapto/__init__.py` but
+  not `uv.lock`, so any `patch`/`minor`/`major` dispatch produced `X`, `X`,
+  `X-1` and died on the three-way consistency assert it was paired with; it
+  also left `CHANGELOG.md` untouched, which Keep a Changelog does not allow
+  for. A version is now a reviewed decision that arrives by pull request with
+  its changelog entry and a regenerated lockfile, and the workflow publishes
+  what `main` already declares — which is what makes the assert meaningful.
+  The check itself moved to `scripts/assert_release_contract.py`, so its
+  failure paths are covered by the suite instead of being reachable only by
+  attempting a real release, and it now also refuses a version whose tag
+  already points at different code, before anything is built.
+
+### Fixed
+
+- **`main` can release again** (#78). The back-merge resolved
+  `.github/workflows/release.yml` in favour of the `release/0.5` side, so
+  `main` carried the maintenance workflow pinned to `EXPECTED_REF:
+  refs/heads/release/0.5` and `EXPECTED_VERSION: "0.5.1"`. Both are asserted
+  before the build step, so every dispatch from `main` failed without
+  producing an artifact — leaving 0.6.0, which contains the migration-bundling
+  fix, cut and unpublishable. The generic workflow is restored with the
+  packaging gates the v0.5.1 line added intact: migrations verified in both
+  the wheel and the sdist, the four-job split that keeps `contents: write` and
+  `id-token: write` out of the building job, and tagging ahead of the
+  immutable PyPI upload. The ref pin, the version constant, and the
+  `release-v0.5` concurrency group are gone.
+
 ### Security
 
 - **transformers constrained to `>=5.10.0`** for CVE-2026-9856, which turned
