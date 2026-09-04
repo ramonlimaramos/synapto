@@ -46,6 +46,7 @@ EXPECTED_MIGRATIONS = {
     "006_add_memory_scopes.sql": "b1d9bc60fed19ba0",
     "007_add_tenant_aliases.sql": "f959c16975896245",
     "008_add_metadata_gin_index.sql": "38370abdc46bf186",
+    "009_add_memory_origin.sql": "5e1fe1f545b1a748",
 }
 
 RESOURCE_PREFIX = "synapto/_migrations/"

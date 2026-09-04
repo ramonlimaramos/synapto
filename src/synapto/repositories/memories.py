@@ -12,6 +12,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
+from synapto.provenance import DEFAULT_ORIGIN, validate_origin
 from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError, _as_uuid
 from synapto.scopes import ScopeSet, reject_conflicting_scope_arguments
 
@@ -21,10 +22,11 @@ from synapto.scopes import ScopeSet, reject_conflicting_scope_arguments
 
 _INSERT = """
     INSERT INTO memories
-        (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata)
+        (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata,
+         origin)
     VALUES (
         %(content)s, %(summary)s, %(emb)s, %(dim)s, %(type)s, %(subtype)s,
-        %(domain)s, %(tenant)s, %(depth)s, %(meta)s
+        %(domain)s, %(tenant)s, %(depth)s, %(meta)s, %(origin)s
     )
     RETURNING id;
 """
@@ -40,6 +42,7 @@ _GET_BY_ID = """
         tenant,
         depth_layer,
         metadata,
+        origin,
         decay_score,
         trust_score,
         access_count,
@@ -60,6 +63,7 @@ _GET_BY_IDS = """
         tenant,
         depth_layer,
         metadata,
+        origin,
         decay_score,
         trust_score,
         access_count,
@@ -94,6 +98,7 @@ _UPDATE_MEMORY = """
         tenant,
         depth_layer,
         metadata,
+        origin,
         decay_score,
         trust_score,
         access_count,
@@ -115,8 +120,12 @@ _AUTHORIZE_MEMORY = """
 
 _SOFT_DELETE = """
     UPDATE memories SET deleted_at = now()
-    WHERE id = %s AND deleted_at IS NULL
+    WHERE id = %(memory_id)s AND deleted_at IS NULL
     RETURNING id;
+"""
+
+_SELECT_ORIGIN = """
+    SELECT origin FROM memories WHERE id = %s AND deleted_at IS NULL;
 """
 
 _UPDATE_TRUST = """
@@ -217,6 +226,7 @@ class MemoryRepository:
         *,
         domain: str | None = None,
         scopes: ScopeSet | None = None,
+        origin: str = DEFAULT_ORIGIN,
     ) -> UUID:
         """Create a memory, optionally with its initial scopes.
 
@@ -243,6 +253,7 @@ class MemoryRepository:
             "tenant": tenant,
             "depth": depth_layer,
             "meta": Jsonb(metadata or {}),
+            "origin": validate_origin(origin),
         }
 
         if not scopes:
@@ -432,7 +443,16 @@ class MemoryRepository:
         return [by_id[memory_id] for memory_id in requested if memory_id in by_id]
 
     async def soft_delete(self, memory_id: str) -> list[dict]:
-        return await self._db.execute(_SOFT_DELETE, (memory_id,))
+        return await self._db.execute(_SOFT_DELETE, {"memory_id": memory_id})
+
+    async def get_origin(self, memory_id: str | UUID) -> str | None:
+        """Return a live memory's recorded origin, or None if it is gone.
+
+        Read rather than inferred, every time. The value is whatever the writer
+        declared; nothing here reconstructs it from the row's shape or age.
+        """
+        row = await self._db.execute_one(_SELECT_ORIGIN, (memory_id,))
+        return row["origin"] if row else None
 
     async def update_trust(self, memory_id: str, delta: float) -> list[dict]:
         return await self._db.execute(_UPDATE_TRUST, (delta, memory_id))
