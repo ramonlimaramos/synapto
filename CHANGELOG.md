@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **`recall(metadata_filter=...)` and a match count that is not capped by
+  `limit`** (#76). Memories carry an arbitrary `metadata` JSONB and nothing
+  could query it, so "how many findings of `failure_class=x` exist?" could only
+  be answered by recalling and counting client-side — a number bounded by the
+  page size, which is a lower bound that silently stops being one as the store
+  grows while still looking like a count. The filter translates to
+  `metadata @> ...::jsonb` and composes with `tenant`, `depth_layer`,
+  `subtype`, `domain`, and `scopes`, because it is built by the same
+  `_build_memory_filters` the search uses — a count and a page cannot disagree
+  about what matching means. `count_memories()` answers the aggregate question
+  directly; `recall` reports it in its headline whenever a filter is given.
+- **a GIN index on `memories.metadata`** (migration `008`), using
+  `jsonb_path_ops` rather than the default operator class: it indexes whole
+  paths instead of every key and value, which is smaller and faster for the
+  containment operator this index exists to serve. The trade — no key-existence
+  queries — is deliberate.
+
+### Changed
+
+- **a `metadata_filter` is one level of scalars, and nesting is rejected**
+  (#76). `@>` matches sub-objects and treats arrays as subsets, so a nested
+  filter would answer something subtler than the exact-key equality the
+  aggregation case needs, and the caller would have to know which. One level
+  has exactly one reading; anything else raises a `ToolError` naming the
+  offending key.
+
+### Added
+
 - **typed scopes are reachable from the MCP tools** (#75). The applicability
   axis was implemented and tested at four layers — the `memory_scopes` table,
   the `ScopeSet` value objects, the repository, and the search — and reachable
