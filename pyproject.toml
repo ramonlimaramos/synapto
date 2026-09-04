@@ -60,6 +60,8 @@ dependencies = [
     "pgvector>=0.3.0",
     "redis>=5.0",
     "sentence-transformers>=3.0",
+    # pinned to fix CVE-2026-9856, pulled transitively by sentence-transformers.
+    "transformers>=5.10.0",
     "pydantic>=2.0",
     # pinned to fix PYSEC-2026-2132.
     "click>=8.3.3",
