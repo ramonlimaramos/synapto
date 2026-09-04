@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Security
+
+- **transformers constrained to `>=5.10.0`** for CVE-2026-9856, which turned
+  `main` CI red as soon as the advisory landed — the resolved `5.5.3` came in
+  transitively through `sentence-transformers`, which does not itself pin a
+  fixed range. Resolves to `5.16.1`, carrying `tokenizers` to `0.23.2` and
+  `safetensors` to `0.8.0`. `sentence-transformers` stays at `5.4.0` and the
+  embedding model still loads at `dim=384`, so no stored vector is affected.
+  The audit continues to run with no exemptions.
+
 ## [0.6.0] - 2026-08-27
 
 ### Changed
