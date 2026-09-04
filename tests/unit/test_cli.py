@@ -266,6 +266,20 @@ class _FakeDbClient:
         self.calls.append((sql, params))
         return self.rows
 
+    async def execute_one(self, sql, params=None):
+        """Answer the tenant-alias lookup without pretending to be a database.
+
+        Tenant resolution consults ``tenant_aliases`` on every command, so this
+        stand-in has to answer it. ``None`` means "this tenant was never
+        merged", which is what every test here already assumed.
+
+        Deliberately not recorded in ``calls``: that list is the assertion
+        surface for the SQL a command issues on purpose, and adding an
+        infrastructural lookup to it would shift every positional assertion by
+        one for a query none of these tests are about.
+        """
+        return None
+
 
 class _FakeProvider:
     dimension = 3

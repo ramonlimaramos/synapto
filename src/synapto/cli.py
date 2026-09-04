@@ -217,11 +217,11 @@ def search(query: str, tenant: str | None, limit: int, depth: str | None, domain
         from synapto.search.hybrid import hybrid_search
 
         config = load_config()
-        t = tenant or config.default_tenant
 
         client = PostgresClient(config.pg_dsn)
         await client.connect()
 
+        t = await _resolve_cli_tenant(client, tenant, config)
         provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         await ensure_hnsw_index(client, provider.dimension)
 
@@ -257,7 +257,7 @@ def stats(tenant: str | None) -> None:
         client = PostgresClient(config.pg_dsn)
         await client.connect()
 
-        t = tenant or config.default_tenant
+        t = await _resolve_cli_tenant(client, tenant, config)
         mem_repo = MemoryRepository(client)
         ent_repo = EntityRepository(client)
 
@@ -278,6 +278,128 @@ def stats(tenant: str | None) -> None:
         await client.close()
 
     _run(_stats())
+
+
+async def _resolve_cli_tenant(client, tenant: str | None, config) -> str:
+    """Resolve the tenant a CLI command operates on.
+
+    The same contract the MCP server applies, so `synapto search` and `recall`
+    cannot disagree about which partition they are reading: an explicit tenant
+    is validated and never repaired, an absent one is derived from the working
+    directory's git remote, and the result follows one alias hop so a tenant
+    that was merged away still reaches its memories.
+
+    Derivation is more useful here than on the server: the CLI runs in the
+    operator's current directory, while a long-lived server process carries
+    whichever directory it was launched from.
+    """
+    from synapto.repositories.tenants import TenantAliasRepository
+    from synapto.tenants import InvalidTenantError, resolve_tenant
+
+    try:
+        resolved = resolve_tenant(tenant, configured=config.default_tenant)
+    except InvalidTenantError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return await TenantAliasRepository(client).resolve(resolved)
+
+
+def _render_merge_plan(groups, counts) -> tuple[list, list]:
+    """Print the proposed mapping and return it split into actionable and held-back.
+
+    Every group is printed, singletons included, so the reader can account for
+    each tenant in the store rather than trusting that the omitted ones were
+    uninteresting.
+    """
+    from synapto.tenants import AMBIGUOUS, EXACT
+
+    actionable = [g for g in groups if g.is_actionable and len(g.members) > 1]
+    held = [g for g in groups if not g.is_actionable and len(g.members) > 1]
+    singletons = [g for g in groups if len(g.members) == 1]
+
+    marker = {EXACT: "merge", AMBIGUOUS: "STOP "}
+    for group in actionable + held:
+        label = marker.get(group.confidence, "check")
+        target = group.canonical or "(undecided)"
+        click.echo(f"\n[{label}] -> {target}   ({group.reason})")
+        for member in group.members:
+            arrow = "  =" if member == group.canonical else "  ->"
+            click.echo(f"  {arrow} {member}  ({counts[member]} memories)")
+
+    if singletons:
+        click.echo(f"\nunchanged ({len(singletons)} tenants with no sibling spelling):")
+        click.echo("  " + ", ".join(g.members[0] for g in singletons))
+
+    return actionable, held
+
+
+@main.command()
+@click.option("--merge-tenants", is_flag=True, help="collapse near-duplicate tenant spellings")
+@click.option(
+    "--dry-run/--apply",
+    "dry_run",
+    default=True,
+    help="report the proposed mapping without changing anything (default), or execute it",
+)
+def maintain(merge_tenants: bool, dry_run: bool) -> None:
+    """Run maintenance operations over stored memories.
+
+    ``--merge-tenants`` reports how the stored tenants would collapse. It is a
+    proposal, never a decision: groups whose canonical spelling is not
+    determined by the data are printed and skipped rather than guessed at,
+    because applying the plan moves real memories between partitions.
+
+    ``--dry-run`` is the default. Applying requires saying so.
+    """
+    if not merge_tenants:
+        raise click.UsageError("select an operation — currently only --merge-tenants")
+
+    async def _maintain():
+        from synapto.config import load_config
+        from synapto.db.postgres import PostgresClient
+        from synapto.repositories.memories import MemoryRepository
+        from synapto.repositories.tenants import TenantAliasRepository
+        from synapto.tenants import plan_tenant_merges
+
+        config = load_config()
+        client = PostgresClient(config.pg_dsn)
+        await client.connect()
+        try:
+            rows = await MemoryRepository(client).count_by_tenant()
+            counts = {r["tenant"]: r["cnt"] for r in rows}
+            if not counts:
+                click.echo("no memories stored — nothing to merge")
+                return
+
+            groups = plan_tenant_merges(counts)
+            click.echo(f"{len(counts)} tenants, {sum(counts.values())} memories")
+            actionable, held = _render_merge_plan(groups, counts)
+
+            if held:
+                click.echo(
+                    f"\n{len(held)} group(s) need a human decision and will not be touched. "
+                    "Pick a canonical spelling and re-run once the data says which it is."
+                )
+
+            if not actionable:
+                click.echo("\nnothing can be merged without a decision.")
+                return
+
+            moves = sum(counts[m] for g in actionable for m in g.members if m != g.canonical)
+            if dry_run:
+                click.echo(f"\ndry run — nothing changed. --apply would move {moves} memories.")
+                return
+
+            aliases = TenantAliasRepository(client)
+            moved = 0
+            for group in actionable:
+                for member in group.members:
+                    if member != group.canonical:
+                        moved += await aliases.merge(member, group.canonical)
+            click.echo(f"\nmerged {moved} memories into {len(actionable)} canonical tenant(s)")
+        finally:
+            await client.close()
+
+    _run(_maintain())
 
 
 @main.command()
@@ -503,7 +625,7 @@ def export_cmd(tenant: str | None, output: str) -> None:
         client = PostgresClient(config.pg_dsn)
         await client.connect()
 
-        t = tenant or config.default_tenant
+        t = await _resolve_cli_tenant(client, tenant, config)
         rows = await client.execute(
             """
             SELECT id, content, summary, type, subtype, domain, tenant, depth_layer, metadata, created_at, accessed_at
@@ -547,11 +669,12 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
         from synapto.embeddings.registry import get_provider
 
         config = load_config()
-        t = tenant or config.default_tenant
 
         client = PostgresClient(config.pg_dsn)
         await client.connect()
         await run_migrations(client)
+
+        t = await _resolve_cli_tenant(client, tenant, config)
 
         provider = get_provider(config.embedding_provider, **embedding_provider_kwargs(config))
         await ensure_hnsw_index(client, provider.dimension)
