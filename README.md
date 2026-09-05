@@ -393,6 +393,20 @@ Two fail-closed rules protect your real data:
 - **No DSN, no connection.** With `SYNAPTO_TEST_PG_DSN` unset, the database-backed tests are skipped — never silently pointed at a default. `pytest` alone still runs every test that does not need PostgreSQL.
 - **The database must be named `*_test`.** The suite asks the live connection for `current_database()` and aborts before any destructive setup if the name does not end in `_test`. Parsing the DSN is not enough: a DSN can omit the database name, and service files can redirect it.
 
+### Retrieval eval
+
+`tests/eval` is a golden-set harness that measures what `recall` actually returns, not just that filters apply. It seeds a synthetic corpus (`tests/eval/corpus.toml`, ~200 memories under tenant `acme/eval`) through `remember`, runs the cases in `tests/eval/golden/<signal>.toml` through `hybrid_search`, and reports **MRR@10** and **Recall@5** per signal — `layer`, `trust`, `decay`, `hrr`, `scopes`, `metadata`, `general`. The numbers are compared with the committed `tests/eval/baseline.json`; a move beyond `±0.02` in either direction fails, so a ranking change cannot merge without re-baselining in the same PR. It runs with the rest of the suite (same `SYNAPTO_TEST_PG_DSN`, same deterministic offline embeddings, no model download).
+
+The baseline is a measurement of the current ranker, not a target: a case the ranker gets wrong today stays in the set with its low score.
+
+To add a case, append a `[[case]]` to the signal's file (`query`, `expected` corpus key, optional `scopes`, `metadata_filter`, `depth_layer`), add any new memory to `corpus.toml` with a stable `key`, then re-baseline — the corpus digest recorded in the baseline changes, and the gate says so:
+
+```bash
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test SYNAPTO_EVAL_WRITE_BASELINE=1 uv run pytest tests/eval
+```
+
+Commit the resulting `baseline.json` next to the change that moved it. Keep the corpus synthetic (`acme/*` only); a test rejects anything else.
+
 ## License
 
 MIT

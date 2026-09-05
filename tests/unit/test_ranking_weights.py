@@ -162,3 +162,32 @@ class TestQualitySignalsReachTheFinalOrder:
         working = await _insert(store, provider, depth_layer="working")
 
         assert await _order(store, provider) == [core, working]
+
+
+class TestTiesAreBrokenTowardTheNewestMemory:
+    """Equal relevance and equal weight is common — twins, templated notes — and
+    an unspecified order there makes every result page, and the retrieval
+    eval that measures it, flicker between runs. The SQL breaks ties by
+    ``created_at DESC`` then ``id`` at each of its three ``ORDER BY`` sites,
+    so the same data always yields the same order."""
+
+    async def test_the_newer_twin_comes_first(self, store, provider):
+        older = await _insert(store, provider)
+        newer = await _insert(store, provider)
+
+        assert await _order(store, provider) == [newer, older]
+
+    async def test_the_order_is_stable_across_calls(self, store, provider):
+        for _ in range(4):
+            await _insert(store, provider)
+
+        first = await _order(store, provider)
+
+        for _ in range(5):
+            assert await _order(store, provider) == first
+
+    def test_every_order_by_in_the_template_names_the_tie_breakers(self):
+        sites = [line for line in RRF_QUERY_TEMPLATE.splitlines() if "LIMIT" in line]
+        assert len(sites) == 3, "two legs and the outer query"
+        assert RRF_QUERY_TEMPLATE.count("created_at DESC, id") == 2, "both legs"
+        assert "m.created_at DESC,\n    m.id\nLIMIT" in RRF_QUERY_TEMPLATE, "the outer query"

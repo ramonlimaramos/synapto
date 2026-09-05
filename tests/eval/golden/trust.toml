@@ -1,0 +1,25 @@
+# A trusted memory must outrank a distrusted one that says the opposite in the same words.
+
+[[case]]
+query = "acme/gateway rate limit per api key"
+expected = "trust-01-high"
+
+[[case]]
+query = "acme/ledger posts entries in double entry"
+expected = "trust-02-high"
+
+[[case]]
+query = "acme/web bundle size budget"
+expected = "trust-03-high"
+
+[[case]]
+query = "acme/docs are published from the main branch"
+expected = "trust-04-high"
+
+[[case]]
+query = "acme/api pagination uses opaque cursors"
+expected = "trust-05-high"
+
+[[case]]
+query = "acme/auth password hashing algorithm"
+expected = "trust-06-high"

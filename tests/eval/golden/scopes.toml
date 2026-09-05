@@ -1,0 +1,36 @@
+# Identical content under different scopes; only the scope filter separates them.
+
+[[case]]
+query = "run the test suite before pushing"
+expected = "scopes-tests-python"
+scopes = ["language:python"]
+
+[[case]]
+query = "run the test suite before pushing"
+expected = "scopes-tests-typescript"
+scopes = ["language:typescript"]
+
+[[case]]
+query = "feature flags default off except preview"
+expected = "scopes-flags-web"
+scopes = ["repo:acme/web"]
+
+[[case]]
+query = "secrets in committed environment files"
+expected = "scopes-secrets-global"
+scopes = ["repo:acme/web"]
+
+[[case]]
+query = "lint warnings are errors"
+expected = "scopes-lint-api-python"
+scopes = ["repo:acme/api", "language:python"]
+
+[[case]]
+query = "migrations reviewed by a second engineer"
+expected = "scopes-migrations-workflow"
+scopes = ["workflow:migrations"]
+
+[[case]]
+query = "sign the tag before publishing"
+expected = "scopes-release-release"
+scopes = ["skill:release"]

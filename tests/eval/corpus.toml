@@ -1,0 +1,1366 @@
+# Golden-set corpus for tests/eval — synthetic acme/* material under tenant acme/eval.
+#
+# Keys are stable identifiers the cases in golden/*.toml point at. Optional
+# `trust` and `decay` override the stored scores after seeding; everything else
+# goes through `remember` exactly as a client would send it.
+
+[[memory]]
+key = "layer-01-core"
+content = "Deploys of acme/api go through a canary stage before the full rollout; the canary holds ten minutes and aborts on any rise in server errors."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "layer-01-ephemeral"
+content = "canary stage before the full rollout of acme/api, check later"
+type = "project"
+layer = "ephemeral"
+
+[[memory]]
+key = "layer-02-core"
+content = "Invoice numbers in acme/billing are never reused, even after a void; the sequence is monotonic per account and audited quarterly."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "layer-02-working"
+content = "acme/billing invoice numbers are never reused?"
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "layer-03-stable"
+content = "Session tokens issued by acme/auth expire after twelve hours; a refresh extends them once and never twice."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "layer-03-ephemeral"
+content = "acme/auth session tokens expire after twelve hours, saw it in a log"
+type = "project"
+layer = "ephemeral"
+
+[[memory]]
+key = "layer-04-stable"
+content = "The acme/search reindex runs nightly at two in the morning and skips accounts with no writes that day."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "layer-04-working"
+content = "acme/search reindex runs nightly at two"
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "layer-05-core"
+content = "acme/notify batches push notifications per device and flushes every five seconds so a burst never wakes a phone twice."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "layer-05-working"
+content = "acme/notify batches push notifications per device"
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "layer-06-core"
+content = "Every acme/worker job is idempotent by job id; a redelivery after a crash is a no-op rather than a duplicate side effect."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "layer-06-ephemeral"
+content = "acme/worker jobs are idempotent by job id, apparently"
+type = "project"
+layer = "ephemeral"
+
+[[memory]]
+key = "trust-01-high"
+content = "The acme/gateway rate limit is one thousand requests per minute per api key, enforced with a sliding window in Redis."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-01-low"
+content = "acme/gateway rate limit per api key is five hundred a minute"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "trust-02-high"
+content = "acme/ledger posts every entry in double entry form; a debit without a matching credit is rejected at the write path."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-02-low"
+content = "acme/ledger posts entries in double entry, I think"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "trust-03-high"
+content = "The acme/web bundle size budget is two hundred kilobytes gzipped for the initial route; CI fails the build above it."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-03-low"
+content = "acme/web bundle size budget is around one megabyte"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "trust-04-high"
+content = "acme/docs are published from the main branch by the release workflow, never from a local machine."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-04-low"
+content = "acme/docs are published from the main branch manually"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "trust-05-high"
+content = "acme/api pagination uses opaque cursors; offsets were removed because they skipped rows under concurrent inserts."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-05-low"
+content = "acme/api pagination uses opaque cursors or offsets"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "trust-06-high"
+content = "acme/auth hashes passwords with argon2id; the password hashing algorithm parameters are tuned to about two hundred milliseconds."
+type = "project"
+layer = "stable"
+trust = 0.95
+
+[[memory]]
+key = "trust-06-low"
+content = "acme/auth password hashing algorithm is bcrypt"
+type = "project"
+layer = "stable"
+trust = 0.15
+
+[[memory]]
+key = "decay-01-fresh"
+content = "acme/billing dunning retries follow a schedule of one, three and seven days after the first failed charge."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-01-stale"
+content = "acme/billing dunning retries schedule: daily for a week"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "decay-02-fresh"
+content = "The acme/search synonyms file lives at config/synonyms.txt and the location is read once at startup."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-02-stale"
+content = "acme/search synonyms file location was config/syn.json"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "decay-03-fresh"
+content = "acme/notify sends email through the primary email provider with a secondary provider as failover when bounces exceed two percent."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-03-stale"
+content = "acme/notify email provider is being evaluated"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "decay-04-fresh"
+content = "The acme/worker queue visibility timeout is ninety seconds; jobs longer than that must heartbeat to extend it."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-04-stale"
+content = "acme/worker queue visibility timeout thirty seconds"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "decay-05-fresh"
+content = "acme/gateway tls certificates rotate automatically every sixty days through the rotation job; manual rotation is for incidents only."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-05-stale"
+content = "acme/gateway tls certificates rotation is manual"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "decay-06-fresh"
+content = "The acme/ledger monthly close freeze window blocks backdated entries for forty eight hours after the first of the month."
+type = "project"
+layer = "stable"
+decay = 1.0
+
+[[memory]]
+key = "decay-06-stale"
+content = "acme/ledger monthly close freeze window is a day"
+type = "project"
+layer = "stable"
+decay = 0.2
+
+[[memory]]
+key = "scopes-tests-python"
+content = "Run the test suite with the project runner before pushing; the pre push hook mirrors CI."
+type = "project"
+layer = "stable"
+scopes = ["language:python"]
+
+[[memory]]
+key = "scopes-tests-typescript"
+content = "Run the test suite with the project runner before pushing; the pre push hook mirrors CI."
+type = "project"
+layer = "stable"
+scopes = ["language:typescript"]
+
+[[memory]]
+key = "scopes-flags-web"
+content = "Feature flags default to off in every environment except the preview one."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/web"]
+
+[[memory]]
+key = "scopes-flags-api"
+content = "Feature flags default to off in every environment except the preview one."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api"]
+
+[[memory]]
+key = "scopes-secrets-global"
+content = "Secrets never go in environment files committed to the repository; use the secret manager."
+type = "project"
+layer = "stable"
+scopes = ["global:all"]
+
+[[memory]]
+key = "scopes-secrets-api"
+content = "Secrets never go in environment files committed to the repository; use the secret manager."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api"]
+
+[[memory]]
+key = "scopes-lint-api-python"
+content = "Lint runs with the repository ruleset; warnings are errors in CI."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api", "language:python"]
+
+[[memory]]
+key = "scopes-lint-api-typescript"
+content = "Lint runs with the repository ruleset; warnings are errors in CI."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api", "language:typescript"]
+
+[[memory]]
+key = "scopes-migrations-unscoped"
+content = "Migrations are reviewed by a second engineer before they run against a shared database."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "scopes-migrations-workflow"
+content = "Migrations are reviewed by a second engineer before they run against a shared database."
+type = "project"
+layer = "stable"
+scopes = ["workflow:migrations"]
+
+[[memory]]
+key = "scopes-release-release"
+content = "The release skill signs the tag before publishing and refuses an unsigned one."
+type = "project"
+layer = "stable"
+scopes = ["skill:release"]
+
+[[memory]]
+key = "scopes-release-deploy"
+content = "The release skill signs the tag before publishing and refuses an unsigned one."
+type = "project"
+layer = "stable"
+scopes = ["skill:deploy"]
+
+[[memory]]
+key = "metadata-errors-timeout"
+content = "acme/api returned elevated errors during the incident; the root cause is recorded under the failure class."
+type = "project"
+layer = "stable"
+metadata = { failure_class = "timeout" }
+
+[[memory]]
+key = "metadata-errors-auth"
+content = "acme/api returned elevated errors during the incident; the root cause is recorded under the failure class."
+type = "project"
+layer = "stable"
+metadata = { failure_class = "auth" }
+
+[[memory]]
+key = "metadata-outage-high"
+content = "Postmortem for the acme/billing outage: charges were delayed and none were lost."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", severity = "high" }
+
+[[memory]]
+key = "metadata-outage-low"
+content = "Postmortem for the acme/billing outage: charges were delayed and none were lost."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", severity = "low" }
+
+[[memory]]
+key = "metadata-storm-101"
+content = "The acme/worker retry storm was traced to a missing jitter on the backoff."
+type = "project"
+layer = "stable"
+metadata = { ticket = "ACME-101" }
+
+[[memory]]
+key = "metadata-storm-202"
+content = "The acme/worker retry storm was traced to a missing jitter on the backoff."
+type = "project"
+layer = "stable"
+metadata = { ticket = "ACME-202" }
+
+[[memory]]
+key = "metadata-rebuild-verified"
+content = "The acme/search index rebuild finished within the maintenance window."
+type = "project"
+layer = "stable"
+metadata = { verified = true }
+
+[[memory]]
+key = "metadata-rebuild-unverified"
+content = "The acme/search index rebuild finished within the maintenance window."
+type = "project"
+layer = "stable"
+metadata = { verified = false }
+
+[[memory]]
+key = "metadata-upgrade-v3"
+content = "Upgrade notes for the acme/gateway proxy layer."
+type = "project"
+layer = "stable"
+metadata = { version = 3 }
+
+[[memory]]
+key = "metadata-upgrade-v4"
+content = "Upgrade notes for the acme/gateway proxy layer."
+type = "project"
+layer = "stable"
+metadata = { version = 4 }
+
+[[memory]]
+key = "hrr-01-target"
+content = "`acme/billing` publishes invoice events to `acme/ledger` over Kafka; the topic is partitioned by account."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-01-a"
+content = "`acme/billing` stores invoices in PostgreSQL with a unique constraint per account."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-01-b"
+content = "`acme/ledger` consumes account events over Kafka and posts them in double entry."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-02-target"
+content = "`acme/auth` issues tokens that `acme/gateway` verifies with the key set endpoint cached in Redis."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-02-a"
+content = "`acme/auth` issues tokens with a twelve hour lifetime and a single refresh."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-02-b"
+content = "`acme/gateway` caches upstream responses in Redis for sixty seconds."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-03-target"
+content = "`acme/web` calls `acme/search` through `acme/gateway`; the gateway adds the account header."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-03-a"
+content = "`acme/web` renders search results with a client side cache."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-03-b"
+content = "`acme/search` requires the account header on every request."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-04-target"
+content = "`acme/notify` reads delivery preferences from `acme/auth` and falls back to email when the profile has none."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-04-a"
+content = "`acme/notify` supports email, push and sms channels."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-04-b"
+content = "`acme/auth` stores profile preferences as a jsonb column."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-05-target"
+content = "`acme/worker` drains the outbox table of `acme/api` and publishes each row to Kafka exactly once."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-05-a"
+content = "`acme/api` writes to an outbox table inside the same transaction as the change."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-05-b"
+content = "`acme/worker` polls Kafka consumer lag every thirty seconds."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-06-target"
+content = "`acme/docs` builds from the `acme/api` OpenAPI schema and the `acme/web` component stories in one pipeline."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-06-a"
+content = "`acme/api` publishes an OpenAPI schema on every release."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "hrr-06-b"
+content = "`acme/web` component stories run in CI on every pull request."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-01"
+content = "acme/api retries idempotent requests three times with exponential backoff capped at two seconds."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-02"
+content = "acme/web uses server side rendering for the landing routes and client rendering after login."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-03"
+content = "acme/billing charges in the customer currency and settles in usd at the daily rate."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "general-04"
+content = "acme/auth locks an account after ten failed logins within fifteen minutes."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-05"
+content = "acme/search tokenizes product codes as a single term so dashes are not split."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-06"
+content = "acme/notify suppresses duplicate alerts with a five minute dedup key per recipient."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "general-07"
+content = "acme/ledger stores amounts as integer cents; floating point never touches money."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-08"
+content = "acme/gateway strips internal headers before forwarding a response to the client."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-09"
+content = "acme/worker runs one process per queue and scales horizontally with the queue depth."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "general-10"
+content = "acme/docs redirects old anchors through a generated map so external links survive a rename."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-11"
+content = "Database connection pools in acme/api are sized at twice the cpu count and never above forty."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-12"
+content = "Feature branches in acme/web deploy to a preview environment named after the branch."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "general-13"
+content = "Refunds in acme/billing reverse the original charge and never create a negative invoice."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-14"
+content = "acme/auth supports passkeys as a second factor alongside time based codes."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-15"
+content = "Queries to acme/search time out at eight hundred milliseconds and return partial results with a flag."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "general-16"
+content = "acme/notify webhooks are signed with a per customer secret and include a timestamp to stop replays."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-17"
+content = "acme/ledger exports a monthly trial balance as csv to the finance bucket."
+type = "project"
+layer = "stable"
+
+[[memory]]
+key = "general-18"
+content = "acme/gateway returns a retry after header when it sheds load."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-api-logs"
+content = "acme/api logs are shipped to the central log store with a retention of 10 days."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api"]
+metadata = { service = "acme/api", topic = "logs" }
+
+[[memory]]
+key = "bg-api-health"
+content = "acme/api health checks hit the health endpoint every 13 seconds from the load balancer."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-api-oncall"
+content = "On call for acme/api rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/api", topic = "oncall" }
+
+[[memory]]
+key = "bg-api-upgrades"
+content = "acme/api dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/api"]
+
+[[memory]]
+key = "bg-api-tracing"
+content = "acme/api tracing samples 22 percent of requests in production."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/api", topic = "tracing" }
+
+[[memory]]
+key = "bg-api-readme"
+content = "The acme/api readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-api-replicas"
+content = "acme/api runs 28 replicas in production and two in staging."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/api"]
+metadata = { service = "acme/api", topic = "replicas" }
+
+[[memory]]
+key = "bg-api-config"
+content = "acme/api configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-api-backups"
+content = "Backups for acme/api run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/api", topic = "backups" }
+
+[[memory]]
+key = "bg-api-dashboards"
+content = "The acme/api team reviews the dashboards every morning before standup."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/api"]
+
+[[memory]]
+key = "bg-api-metrics"
+content = "acme/api exposes metrics on port 40 for the scraper."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/api", topic = "metrics" }
+
+[[memory]]
+key = "bg-web-logs"
+content = "acme/web logs are shipped to the central log store with a retention of 17 days."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-web-health"
+content = "acme/web health checks hit the health endpoint every 20 seconds from the load balancer."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/web", topic = "health" }
+
+[[memory]]
+key = "bg-web-oncall"
+content = "On call for acme/web rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/web"]
+
+[[memory]]
+key = "bg-web-upgrades"
+content = "acme/web dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/web", topic = "upgrades" }
+
+[[memory]]
+key = "bg-web-tracing"
+content = "acme/web tracing samples 29 percent of requests in production."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-web-readme"
+content = "The acme/web readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/web"]
+metadata = { service = "acme/web", topic = "readme" }
+
+[[memory]]
+key = "bg-web-replicas"
+content = "acme/web runs 35 replicas in production and two in staging."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-web-config"
+content = "acme/web configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/web", topic = "config" }
+
+[[memory]]
+key = "bg-web-backups"
+content = "Backups for acme/web run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/web"]
+
+[[memory]]
+key = "bg-web-dashboards"
+content = "The acme/web team reviews the dashboards every morning before standup."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/web", topic = "dashboards" }
+
+[[memory]]
+key = "bg-web-metrics"
+content = "acme/web exposes metrics on port 47 for the scraper."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-billing-logs"
+content = "acme/billing logs are shipped to the central log store with a retention of 24 days."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", topic = "logs" }
+
+[[memory]]
+key = "bg-billing-health"
+content = "acme/billing health checks hit the health endpoint every 27 seconds from the load balancer."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/billing"]
+
+[[memory]]
+key = "bg-billing-oncall"
+content = "On call for acme/billing rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", topic = "oncall" }
+
+[[memory]]
+key = "bg-billing-upgrades"
+content = "acme/billing dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-billing-tracing"
+content = "acme/billing tracing samples 36 percent of requests in production."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/billing"]
+metadata = { service = "acme/billing", topic = "tracing" }
+
+[[memory]]
+key = "bg-billing-readme"
+content = "The acme/billing readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-billing-replicas"
+content = "acme/billing runs 42 replicas in production and two in staging."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", topic = "replicas" }
+
+[[memory]]
+key = "bg-billing-config"
+content = "acme/billing configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/billing"]
+
+[[memory]]
+key = "bg-billing-backups"
+content = "Backups for acme/billing run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/billing", topic = "backups" }
+
+[[memory]]
+key = "bg-billing-dashboards"
+content = "The acme/billing team reviews the dashboards every morning before standup."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-billing-metrics"
+content = "acme/billing exposes metrics on port 54 for the scraper."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/billing"]
+metadata = { service = "acme/billing", topic = "metrics" }
+
+[[memory]]
+key = "bg-auth-logs"
+content = "acme/auth logs are shipped to the central log store with a retention of 31 days."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/auth"]
+
+[[memory]]
+key = "bg-auth-health"
+content = "acme/auth health checks hit the health endpoint every 34 seconds from the load balancer."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/auth", topic = "health" }
+
+[[memory]]
+key = "bg-auth-oncall"
+content = "On call for acme/auth rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-auth-upgrades"
+content = "acme/auth dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/auth"]
+metadata = { service = "acme/auth", topic = "upgrades" }
+
+[[memory]]
+key = "bg-auth-tracing"
+content = "acme/auth tracing samples 43 percent of requests in production."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-auth-readme"
+content = "The acme/auth readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/auth", topic = "readme" }
+
+[[memory]]
+key = "bg-auth-replicas"
+content = "acme/auth runs 49 replicas in production and two in staging."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/auth"]
+
+[[memory]]
+key = "bg-auth-config"
+content = "acme/auth configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/auth", topic = "config" }
+
+[[memory]]
+key = "bg-auth-backups"
+content = "Backups for acme/auth run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-auth-dashboards"
+content = "The acme/auth team reviews the dashboards every morning before standup."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/auth"]
+metadata = { service = "acme/auth", topic = "dashboards" }
+
+[[memory]]
+key = "bg-auth-metrics"
+content = "acme/auth exposes metrics on port 61 for the scraper."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-search-logs"
+content = "acme/search logs are shipped to the central log store with a retention of 38 days."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/search", topic = "logs" }
+
+[[memory]]
+key = "bg-search-health"
+content = "acme/search health checks hit the health endpoint every 41 seconds from the load balancer."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-search-oncall"
+content = "On call for acme/search rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/search"]
+metadata = { service = "acme/search", topic = "oncall" }
+
+[[memory]]
+key = "bg-search-upgrades"
+content = "acme/search dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-search-tracing"
+content = "acme/search tracing samples 50 percent of requests in production."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/search", topic = "tracing" }
+
+[[memory]]
+key = "bg-search-readme"
+content = "The acme/search readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/search"]
+
+[[memory]]
+key = "bg-search-replicas"
+content = "acme/search runs 56 replicas in production and two in staging."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/search", topic = "replicas" }
+
+[[memory]]
+key = "bg-search-config"
+content = "acme/search configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-search-backups"
+content = "Backups for acme/search run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/search"]
+metadata = { service = "acme/search", topic = "backups" }
+
+[[memory]]
+key = "bg-search-dashboards"
+content = "The acme/search team reviews the dashboards every morning before standup."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-search-metrics"
+content = "acme/search exposes metrics on port 68 for the scraper."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/search", topic = "metrics" }
+
+[[memory]]
+key = "bg-notify-logs"
+content = "acme/notify logs are shipped to the central log store with a retention of 45 days."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-notify-health"
+content = "acme/notify health checks hit the health endpoint every 48 seconds from the load balancer."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/notify"]
+metadata = { service = "acme/notify", topic = "health" }
+
+[[memory]]
+key = "bg-notify-oncall"
+content = "On call for acme/notify rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-notify-upgrades"
+content = "acme/notify dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/notify", topic = "upgrades" }
+
+[[memory]]
+key = "bg-notify-tracing"
+content = "acme/notify tracing samples 57 percent of requests in production."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/notify"]
+
+[[memory]]
+key = "bg-notify-readme"
+content = "The acme/notify readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/notify", topic = "readme" }
+
+[[memory]]
+key = "bg-notify-replicas"
+content = "acme/notify runs 63 replicas in production and two in staging."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-notify-config"
+content = "acme/notify configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/notify"]
+metadata = { service = "acme/notify", topic = "config" }
+
+[[memory]]
+key = "bg-notify-backups"
+content = "Backups for acme/notify run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-notify-dashboards"
+content = "The acme/notify team reviews the dashboards every morning before standup."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/notify", topic = "dashboards" }
+
+[[memory]]
+key = "bg-notify-metrics"
+content = "acme/notify exposes metrics on port 75 for the scraper."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/notify"]
+
+[[memory]]
+key = "bg-ledger-logs"
+content = "acme/ledger logs are shipped to the central log store with a retention of 52 days."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/ledger"]
+metadata = { service = "acme/ledger", topic = "logs" }
+
+[[memory]]
+key = "bg-ledger-health"
+content = "acme/ledger health checks hit the health endpoint every 55 seconds from the load balancer."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-ledger-oncall"
+content = "On call for acme/ledger rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/ledger", topic = "oncall" }
+
+[[memory]]
+key = "bg-ledger-upgrades"
+content = "acme/ledger dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/ledger"]
+
+[[memory]]
+key = "bg-ledger-tracing"
+content = "acme/ledger tracing samples 64 percent of requests in production."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/ledger", topic = "tracing" }
+
+[[memory]]
+key = "bg-ledger-readme"
+content = "The acme/ledger readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-ledger-replicas"
+content = "acme/ledger runs 70 replicas in production and two in staging."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/ledger"]
+metadata = { service = "acme/ledger", topic = "replicas" }
+
+[[memory]]
+key = "bg-ledger-config"
+content = "acme/ledger configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-ledger-backups"
+content = "Backups for acme/ledger run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/ledger", topic = "backups" }
+
+[[memory]]
+key = "bg-ledger-dashboards"
+content = "The acme/ledger team reviews the dashboards every morning before standup."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/ledger"]
+
+[[memory]]
+key = "bg-ledger-metrics"
+content = "acme/ledger exposes metrics on port 82 for the scraper."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/ledger", topic = "metrics" }
+
+[[memory]]
+key = "bg-gateway-logs"
+content = "acme/gateway logs are shipped to the central log store with a retention of 59 days."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-gateway-health"
+content = "acme/gateway health checks hit the health endpoint every 62 seconds from the load balancer."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/gateway", topic = "health" }
+
+[[memory]]
+key = "bg-gateway-oncall"
+content = "On call for acme/gateway rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/gateway"]
+
+[[memory]]
+key = "bg-gateway-upgrades"
+content = "acme/gateway dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/gateway", topic = "upgrades" }
+
+[[memory]]
+key = "bg-gateway-tracing"
+content = "acme/gateway tracing samples 71 percent of requests in production."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-gateway-readme"
+content = "The acme/gateway readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/gateway"]
+metadata = { service = "acme/gateway", topic = "readme" }
+
+[[memory]]
+key = "bg-gateway-replicas"
+content = "acme/gateway runs 77 replicas in production and two in staging."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-gateway-config"
+content = "acme/gateway configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/gateway", topic = "config" }
+
+[[memory]]
+key = "bg-gateway-backups"
+content = "Backups for acme/gateway run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/gateway"]
+
+[[memory]]
+key = "bg-gateway-dashboards"
+content = "The acme/gateway team reviews the dashboards every morning before standup."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/gateway", topic = "dashboards" }
+
+[[memory]]
+key = "bg-gateway-metrics"
+content = "acme/gateway exposes metrics on port 89 for the scraper."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-worker-logs"
+content = "acme/worker logs are shipped to the central log store with a retention of 66 days."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/worker", topic = "logs" }
+
+[[memory]]
+key = "bg-worker-health"
+content = "acme/worker health checks hit the health endpoint every 69 seconds from the load balancer."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/worker"]
+
+[[memory]]
+key = "bg-worker-oncall"
+content = "On call for acme/worker rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/worker", topic = "oncall" }
+
+[[memory]]
+key = "bg-worker-upgrades"
+content = "acme/worker dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-worker-tracing"
+content = "acme/worker tracing samples 78 percent of requests in production."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/worker"]
+metadata = { service = "acme/worker", topic = "tracing" }
+
+[[memory]]
+key = "bg-worker-readme"
+content = "The acme/worker readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-worker-replicas"
+content = "acme/worker runs 84 replicas in production and two in staging."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/worker", topic = "replicas" }
+
+[[memory]]
+key = "bg-worker-config"
+content = "acme/worker configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/worker"]
+
+[[memory]]
+key = "bg-worker-backups"
+content = "Backups for acme/worker run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/worker", topic = "backups" }
+
+[[memory]]
+key = "bg-worker-dashboards"
+content = "The acme/worker team reviews the dashboards every morning before standup."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-worker-metrics"
+content = "acme/worker exposes metrics on port 16 for the scraper."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/worker"]
+metadata = { service = "acme/worker", topic = "metrics" }
+
+[[memory]]
+key = "bg-docs-logs"
+content = "acme/docs logs are shipped to the central log store with a retention of 73 days."
+type = "project"
+layer = "working"
+scopes = ["repo:acme/docs"]
+
+[[memory]]
+key = "bg-docs-health"
+content = "acme/docs health checks hit the health endpoint every 76 seconds from the load balancer."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/docs", topic = "health" }
+
+[[memory]]
+key = "bg-docs-oncall"
+content = "On call for acme/docs rotates weekly; the handoff happens on Monday morning."
+type = "project"
+layer = "core"
+
+[[memory]]
+key = "bg-docs-upgrades"
+content = "acme/docs dependency upgrades are batched every other week and released together."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/docs"]
+metadata = { service = "acme/docs", topic = "upgrades" }
+
+[[memory]]
+key = "bg-docs-tracing"
+content = "acme/docs tracing samples 85 percent of requests in production."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-docs-readme"
+content = "The acme/docs readme lists the local setup steps and the required environment variables."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/docs", topic = "readme" }
+
+[[memory]]
+key = "bg-docs-replicas"
+content = "acme/docs runs 11 replicas in production and two in staging."
+type = "project"
+layer = "core"
+scopes = ["repo:acme/docs"]
+
+[[memory]]
+key = "bg-docs-config"
+content = "acme/docs configuration is loaded from environment variables through a typed schema."
+type = "project"
+layer = "stable"
+metadata = { service = "acme/docs", topic = "config" }
+
+[[memory]]
+key = "bg-docs-backups"
+content = "Backups for acme/docs run nightly and a restore drill happens quarterly."
+type = "project"
+layer = "working"
+
+[[memory]]
+key = "bg-docs-dashboards"
+content = "The acme/docs team reviews the dashboards every morning before standup."
+type = "project"
+layer = "stable"
+scopes = ["repo:acme/docs"]
+metadata = { service = "acme/docs", topic = "dashboards" }
+
+[[memory]]
+key = "bg-docs-metrics"
+content = "acme/docs exposes metrics on port 23 for the scraper."
+type = "project"
+layer = "core"

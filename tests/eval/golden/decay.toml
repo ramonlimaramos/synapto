@@ -1,0 +1,25 @@
+# A fresh memory must outrank a decayed one on the same topic.
+
+[[case]]
+query = "acme/billing dunning retries schedule"
+expected = "decay-01-fresh"
+
+[[case]]
+query = "acme/search synonyms file location"
+expected = "decay-02-fresh"
+
+[[case]]
+query = "acme/notify email provider"
+expected = "decay-03-fresh"
+
+[[case]]
+query = "acme/worker queue visibility timeout"
+expected = "decay-04-fresh"
+
+[[case]]
+query = "acme/gateway tls certificates rotation"
+expected = "decay-05-fresh"
+
+[[case]]
+query = "acme/ledger monthly close freeze window"
+expected = "decay-06-fresh"

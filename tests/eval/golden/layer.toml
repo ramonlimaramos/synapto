@@ -1,0 +1,25 @@
+# A higher depth layer must outrank an equal or better lexical match in a lower one.
+
+[[case]]
+query = "canary stage before the full rollout of acme/api"
+expected = "layer-01-core"
+
+[[case]]
+query = "acme/billing invoice numbers are never reused"
+expected = "layer-02-core"
+
+[[case]]
+query = "acme/auth session tokens expire after twelve hours"
+expected = "layer-03-stable"
+
+[[case]]
+query = "acme/search reindex runs nightly at two"
+expected = "layer-04-stable"
+
+[[case]]
+query = "acme/notify batches push notifications per device"
+expected = "layer-05-core"
+
+[[case]]
+query = "acme/worker jobs are idempotent by job id"
+expected = "layer-06-core"
