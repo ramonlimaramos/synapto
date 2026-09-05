@@ -1,4 +1,20 @@
-"""Hybrid search engine — combines vector similarity, full-text, HRR, decay, and depth boosting via RRF."""
+"""Hybrid search engine — combines vector similarity, full-text, HRR, decay, and depth boosting via RRF.
+
+Ranking formula, in one line::
+
+    score = (rrf_vector + rrf_keyword + hrr_boost) × decay_score × trust_score × layer_weight
+
+Relevance signals add; quality modifiers multiply the sum. The SQL orders by
+``rrf × quality_weight`` to choose the candidates, and Python applies the same
+weight after adding the HRR boost, so pre-selection and the final order agree.
+Until 0.7.0 the final sort used the raw RRF, which meant decay, trust and the
+layer weight decided only *who reached* the candidate list, never the order
+the caller saw — ``core`` outranked ``working`` by accident or not at all.
+
+The SQL is a static template; nothing composes it at runtime. ``DEPTH_BOOST``
+mirrors the layer weights the template spells out, and a test asserts the two
+agree — agreement by test, not by generation.
+"""
 
 from __future__ import annotations
 
@@ -33,10 +49,12 @@ DEPTH_BOOST = {
     "ephemeral": 0.5,
 }
 
+
 # 3-way RRF: semantic + keyword + HRR scoring.
 # HRR scoring is done client-side (Python) because it uses bytea vectors
 # that PostgreSQL cannot natively rank. The SQL query fetches candidates from
-# semantic + keyword, then Python adds the HRR signal.
+# semantic + keyword ordered by rrf × quality_weight, then Python adds the HRR
+# signal and applies the same weight (see the module docstring).
 #
 # NOTE: {dim} is injected via str.format() (safe — always an int from provider.dimension).
 # Query params use %(name)s placeholders for psycopg.
@@ -84,7 +102,14 @@ SELECT
     m.accessed_at,
     m.hrr_vector,
     COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
-    COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0) AS rrf_score
+    COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0) AS rrf_score,
+    m.decay_score * m.trust_score * CASE m.depth_layer
+        WHEN 'core' THEN 1.5
+        WHEN 'stable' THEN 1.2
+        WHEN 'working' THEN 1.0
+        WHEN 'ephemeral' THEN 0.5
+        ELSE 1.0
+    END AS quality_weight
 FROM memories m
 LEFT JOIN semantic_search s ON m.id = s.id
 LEFT JOIN keyword_search k ON m.id = k.id
@@ -92,9 +117,7 @@ WHERE (s.id IS NOT NULL OR k.id IS NOT NULL)
 ORDER BY
     (COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
      COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0)) *
-    m.decay_score *
-    m.trust_score *
-    CASE m.depth_layer
+    m.decay_score * m.trust_score * CASE m.depth_layer
         WHEN 'core' THEN 1.5
         WHEN 'stable' THEN 1.2
         WHEN 'working' THEN 1.0
@@ -129,8 +152,9 @@ class SearchResult:
 def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
     """Compute HRR similarity boost for a candidate memory.
 
-    Returns a value in [0, hrr_weight] that gets added to the RRF score.
-    Gracefully returns 0.0 if hrr_vector is None (backward compat).
+    Returns a value in [0, hrr_weight] that is added to the RRF score before
+    the quality weight is applied. Gracefully returns 0.0 if hrr_vector is
+    None (backward compat).
     """
     if not hrr_vector:
         return 0.0
@@ -144,6 +168,22 @@ def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float =
         return ((sim + 1.0) / 2.0) * hrr_weight
     except Exception:
         return 0.0
+
+
+def _rank_candidates(rows: list[dict[str, Any]], query: str, limit: int) -> list[tuple[dict[str, Any], float]]:
+    """Order candidates by ``(rrf + hrr) × quality_weight`` and keep the top ``limit``.
+
+    ``quality_weight`` arrives from the SQL as ``decay × trust × layer_weight``,
+    the same product the SQL ordered by to choose the candidates. A row that
+    predates the column (a fake in a test, say) weighs 1.0. This is the single
+    place the final order is decided; ``hybrid_search`` only feeds it.
+    """
+    scored = []
+    for row in rows:
+        relevance = float(row["rrf_score"]) + _compute_hrr_boost(query, row.get("hrr_vector"))
+        scored.append((row, relevance * float(row.get("quality_weight", 1.0))))
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[:limit]
 
 
 # Applicability, as one correlated predicate so no join fans out and RRF ranking
@@ -323,6 +363,14 @@ async def hybrid_search(
 ) -> list[SearchResult]:
     """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR.
 
+    The final order is ``(rrf + hrr_boost) × decay × trust × layer_weight``;
+    see the module docstring and :func:`_rank_candidates`. The SQL returns
+    ``2 × limit`` candidates so the HRR boost has room to reorder before the cut.
+
+    Filters are built before the query is embedded on purpose: an invalid
+    filter must cost zero embedding calls and zero queries, not fail after
+    paying for a model round trip.
+
     ``domain`` and ``scopes`` are keyword-only. ``domain`` had been inserted
     ahead of ``limit``, which silently rebound positional callers' ``limit`` to
     it; putting both after the established positional parameters restores the
@@ -330,9 +378,6 @@ async def hybrid_search(
 
     ``scopes=None`` means no applicability filter, preserving legacy behavior.
     """
-    # filters are built before embedding on purpose: an invalid scope filter
-    # must cost zero embedding calls and zero queries, not fail after paying for
-    # a model round trip
     filter_sql, filter_params = _build_memory_filters(
         depth_layer=depth_layer,
         subtype=subtype,
@@ -351,23 +396,14 @@ async def hybrid_search(
         "query": query,
         "tenant": tenant,
         "rrf_k": rrf_k,
-        "limit": limit * 2,  # fetch extra for HRR reranking
+        "limit": limit * 2,
     }
     params.update(filter_params)
 
     sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(sql, params)
-
-    # apply HRR boost and rerank
-    scored_rows = []
-    for row in rows:
-        hrr_boost = _compute_hrr_boost(query, row.get("hrr_vector"))
-        final_score = float(row["rrf_score"]) + hrr_boost
-        scored_rows.append((row, final_score))
-
-    scored_rows.sort(key=lambda x: x[1], reverse=True)
-    scored_rows = scored_rows[:limit]
+    scored_rows = _rank_candidates(rows, query, limit)
 
     if scored_rows:
         ids = [row["id"] for row, _ in scored_rows]
