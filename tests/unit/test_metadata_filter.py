@@ -178,13 +178,20 @@ class TestContainmentSemantics:
 
 class TestTheIndexIsUsed:
     async def test_explain_reports_the_gin_index_for_containment(self, store):
-        """A filter that cannot use the index is a sequential scan wearing a filter's name."""
-        await store.execute("SET enable_seqscan = off;")
-        rows = await store.execute(
-            "EXPLAIN SELECT id FROM memories WHERE metadata @> %s::jsonb;",
-            (Jsonb({"failure_class": "missing_docstring"}),),
-        )
-        await store.execute("RESET enable_seqscan;")
+        """A filter that cannot use the index is a sequential scan wearing a filter's name.
+
+        ``enable_seqscan`` is a session setting and ``store.execute`` takes a
+        fresh pool connection per call, so the setting and the ``EXPLAIN`` must
+        share one connection; ``SET LOCAL`` scopes it to that transaction so
+        nothing leaks back into the pool.
+        """
+        async with store.acquire() as conn, conn.transaction():
+            await conn.execute("SET LOCAL enable_seqscan = off;")
+            cursor = await conn.execute(
+                "EXPLAIN SELECT id FROM memories WHERE metadata @> %s::jsonb;",
+                (Jsonb({"failure_class": "missing_docstring"}),),
+            )
+            rows = await cursor.fetchall()
 
         plan = " ".join(r["QUERY PLAN"] for r in rows)
 
