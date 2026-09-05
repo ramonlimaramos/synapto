@@ -230,6 +230,33 @@ class TestCommandLine:
     def test_too_many_arguments_are_reported(self, gate):
         assert gate.main(["assert_release_contract.py", "a", "b"]) == 2
 
+    def test_the_command_line_uses_the_module_runner_not_a_frozen_default(self, gate, tmp_path, monkeypatch):
+        """A def-time default kept the real ``git ls-remote`` bound under the patch.
+
+        The tests then passed only while the remote had no tag for the declared
+        version and broke the day it did — the check reached the network from a
+        unit test. Whatever the remote holds, this must observe the patched runner.
+        """
+        _write_repo(tmp_path)
+        monkeypatch.setenv("GITHUB_SHA", SHA)
+        seen = []
+
+        def recording_runner(command):
+            seen.append(command)
+            return ""
+
+        monkeypatch.setattr(gate, "_git_ls_remote", recording_runner)
+
+        assert gate.main(["assert_release_contract.py", str(tmp_path)]) == 0
+        assert seen == [["git", "ls-remote", "--tags", "origin", "refs/tags/v0.7.0"]]
+
+    def test_a_tag_on_another_commit_is_seen_through_the_module_runner(self, gate, tmp_path, monkeypatch):
+        _write_repo(tmp_path)
+        monkeypatch.setenv("GITHUB_SHA", SHA)
+        monkeypatch.setattr(gate, "_git_ls_remote", _tag_at("2" * 40))
+
+        assert gate.main(["assert_release_contract.py", str(tmp_path)]) == 1
+
     def test_a_missing_github_output_is_not_an_error(self, gate, tmp_path, monkeypatch):
         """The script is runnable locally, where no step output exists."""
         _write_repo(tmp_path)

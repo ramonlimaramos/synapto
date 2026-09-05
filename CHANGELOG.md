@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- `assert_release_contract.py` resolved its `git ls-remote` runner at definition time, so the command-line tests reached the real remote and broke as soon as the declared version had a published tag; the runner is now resolved at call time and the tests never leave the process
+
 ## [0.7.0] - 2026-09-04
 
 ### Added
