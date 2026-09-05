@@ -11,78 +11,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
-
-# ---------------------------------------------------------------------------
-# SQL constants
-# ---------------------------------------------------------------------------
-
-_UPSERT = """
-    INSERT INTO relations (from_entity_id, to_entity_id, relation_type, weight, metadata)
-    VALUES (%(from_id)s, %(to_id)s, %(type)s, %(weight)s, %(meta)s)
-    ON CONFLICT (from_entity_id, to_entity_id, relation_type) DO UPDATE SET
-        weight = EXCLUDED.weight,
-        metadata = relations.metadata || EXCLUDED.metadata
-    RETURNING id;
-"""
-
-_UPSERT_BY_NAME = """
-    INSERT INTO relations (from_entity_id, to_entity_id, relation_type, weight)
-    SELECT f.id, t.id, %(type)s, %(weight)s
-    FROM entities f, entities t
-    WHERE f.name = %(from)s AND f.tenant = %(tenant)s
-      AND t.name = %(to)s AND t.tenant = %(tenant)s
-    ON CONFLICT (from_entity_id, to_entity_id, relation_type) DO UPDATE SET
-        weight = EXCLUDED.weight
-    RETURNING id;
-"""
-
-_GET_OUTGOING = """
-    SELECT r.id, r.relation_type, r.weight,
-           ef.name AS from_entity, et.name AS to_entity
-    FROM relations r
-    JOIN entities ef ON ef.id = r.from_entity_id
-    JOIN entities et ON et.id = r.to_entity_id
-    WHERE ef.name = %s AND ef.tenant = %s;
-"""
-
-_GET_INCOMING = """
-    SELECT r.id, r.relation_type, r.weight,
-           ef.name AS from_entity, et.name AS to_entity
-    FROM relations r
-    JOIN entities ef ON ef.id = r.from_entity_id
-    JOIN entities et ON et.id = r.to_entity_id
-    WHERE et.name = %s AND et.tenant = %s;
-"""
-
-_GET_BOTH = """
-    SELECT r.id, r.relation_type, r.weight,
-           ef.name AS from_entity, et.name AS to_entity
-    FROM relations r
-    JOIN entities ef ON ef.id = r.from_entity_id
-    JOIN entities et ON et.id = r.to_entity_id
-    WHERE (ef.name = %s OR et.name = %s) AND ef.tenant = %s;
-"""
-
-_GET_FOR_ENTITIES = """
-    SELECT r.id, r.relation_type, r.weight,
-           ef.name AS from_entity, et.name AS to_entity
-    FROM relations r
-    JOIN entities ef ON ef.id = r.from_entity_id
-    JOIN entities et ON et.id = r.to_entity_id
-    WHERE ef.tenant = %s
-      AND et.tenant = %s
-      AND (ef.name = ANY(%s) OR et.name = ANY(%s))
-    ORDER BY r.relation_type, ef.name, et.name;
-"""
-
-_DELETE = "DELETE FROM relations WHERE id = %s RETURNING id;"
-
-_COUNT = "SELECT count(*) as cnt FROM relations;"
-
-
-# ---------------------------------------------------------------------------
-# Repository
-# ---------------------------------------------------------------------------
+from synapto.sql import relations as sql
 
 
 class RelationRepository:
@@ -100,7 +29,7 @@ class RelationRepository:
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
         row = await self._db.execute_one(
-            _UPSERT,
+            sql.UPSERT,
             {
                 "from_id": from_entity_id,
                 "to_id": to_entity_id,
@@ -120,7 +49,7 @@ class RelationRepository:
         weight: float = 1.0,
     ) -> UUID | None:
         row = await self._db.execute_one(
-            _UPSERT_BY_NAME,
+            sql.UPSERT_BY_NAME,
             {
                 "from": from_name,
                 "to": to_name,
@@ -138,10 +67,10 @@ class RelationRepository:
         direction: str = "both",
     ) -> list[dict[str, Any]]:
         if direction == "outgoing":
-            return await self._db.execute(_GET_OUTGOING, (entity_name, tenant))
+            return await self._db.execute(sql.GET_OUTGOING, (entity_name, tenant))
         elif direction == "incoming":
-            return await self._db.execute(_GET_INCOMING, (entity_name, tenant))
-        return await self._db.execute(_GET_BOTH, (entity_name, entity_name, tenant))
+            return await self._db.execute(sql.GET_INCOMING, (entity_name, tenant))
+        return await self._db.execute(sql.GET_BOTH, (entity_name, entity_name, tenant))
 
     async def get_relations_for_entities(
         self, entity_names: list[str], tenant: str = "default"
@@ -149,7 +78,7 @@ class RelationRepository:
         if not entity_names:
             return []
 
-        rows = await self._db.execute(_GET_FOR_ENTITIES, (tenant, tenant, entity_names, entity_names))
+        rows = await self._db.execute(sql.GET_FOR_ENTITIES, (tenant, tenant, entity_names, entity_names))
         seen: set[UUID] = set()
         deduped = []
         for row in rows:
@@ -160,9 +89,9 @@ class RelationRepository:
         return deduped
 
     async def delete(self, relation_id: UUID) -> bool:
-        rows = await self._db.execute(_DELETE, (relation_id,))
+        rows = await self._db.execute(sql.DELETE, (relation_id,))
         return len(rows) > 0
 
     async def count(self) -> int:
-        row = await self._db.execute_one(_COUNT)
+        row = await self._db.execute_one(sql.COUNT)
         return row["cnt"]

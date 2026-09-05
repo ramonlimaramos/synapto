@@ -11,9 +11,10 @@ Until 0.7.0 the final sort used the raw RRF, which meant decay, trust and the
 layer weight decided only *who reached* the candidate list, never the order
 the caller saw — ``core`` outranked ``working`` by accident or not at all.
 
-The SQL is a static template; nothing composes it at runtime. ``DEPTH_BOOST``
-mirrors the layer weights the template spells out, and a test asserts the two
-agree — agreement by test, not by generation.
+The SQL lives in :mod:`synapto.sql.search` as static templates; nothing here
+composes it at runtime. ``DEPTH_BOOST`` mirrors the layer weights the template
+spells out, and a test asserts the two agree — agreement by test, not by
+generation.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from synapto.scopes import (
     ScopeSet,
     reject_conflicting_scope_arguments,
 )
+from synapto.sql import search as sql
 
 logger = logging.getLogger("synapto.search.hybrid")
 
@@ -48,84 +50,6 @@ DEPTH_BOOST = {
     "working": 1.0,
     "ephemeral": 0.5,
 }
-
-
-# 3-way RRF: semantic + keyword + HRR scoring.
-# HRR scoring is done client-side (Python) because it uses bytea vectors
-# that PostgreSQL cannot natively rank. The SQL query fetches candidates from
-# semantic + keyword ordered by rrf × quality_weight, then Python adds the HRR
-# signal and applies the same weight (see the module docstring).
-#
-# NOTE: {dim} is injected via str.format() (safe — always an int from provider.dimension).
-# Query params use %(name)s placeholders for psycopg.
-RRF_QUERY_TEMPLATE = """
-WITH semantic_search AS (
-    SELECT
-        id,
-        RANK() OVER (ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS rank
-    FROM memories
-    WHERE deleted_at IS NULL
-      AND tenant = %(tenant)s
-      {{filters}}
-    ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})
-    LIMIT 20
-),
-keyword_search AS (
-    SELECT
-        id,
-        RANK() OVER (
-            ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(query)s)) DESC
-        ) AS rank
-    FROM memories
-    WHERE deleted_at IS NULL
-      AND tenant = %(tenant)s
-      AND tsv @@ plainto_tsquery('english', %(query)s)
-      {{filters}}
-    ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(query)s)) DESC
-    LIMIT 20
-)
-SELECT
-    m.id,
-    m.content,
-    m.summary,
-    m.type,
-    m.subtype,
-    m.domain,
-    m.tenant,
-    m.depth_layer,
-    m.decay_score,
-    m.trust_score,
-    m.metadata,
-    m.origin,
-    m.access_count,
-    m.created_at,
-    m.accessed_at,
-    m.hrr_vector,
-    COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
-    COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0) AS rrf_score,
-    m.decay_score * m.trust_score * CASE m.depth_layer
-        WHEN 'core' THEN 1.5
-        WHEN 'stable' THEN 1.2
-        WHEN 'working' THEN 1.0
-        WHEN 'ephemeral' THEN 0.5
-        ELSE 1.0
-    END AS quality_weight
-FROM memories m
-LEFT JOIN semantic_search s ON m.id = s.id
-LEFT JOIN keyword_search k ON m.id = k.id
-WHERE (s.id IS NOT NULL OR k.id IS NOT NULL)
-ORDER BY
-    (COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
-     COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0)) *
-    m.decay_score * m.trust_score * CASE m.depth_layer
-        WHEN 'core' THEN 1.5
-        WHEN 'stable' THEN 1.2
-        WHEN 'working' THEN 1.0
-        WHEN 'ephemeral' THEN 0.5
-        ELSE 1.0
-    END DESC
-LIMIT %(limit)s;
-"""
 
 
 @dataclass
@@ -186,43 +110,6 @@ def _rank_candidates(rows: list[dict[str, Any]], query: str, limit: int) -> list
     return scored[:limit]
 
 
-# Applicability, as one correlated predicate so no join fans out and RRF ranking
-# stays intact. Reading it inside-out:
-#   * the memory must have at least one scope, which is what excludes unscoped
-#     legacy rows whenever a filter is requested;
-#   * global:all short-circuits to a match;
-#   * otherwise every scope type the memory carries must be satisfied by at
-#     least one requested value of that type. Grouping by scope_type gives OR
-#     within a type for free, and NOT EXISTS over the unsatisfied groups gives
-#     AND across types. A requested type the memory does not carry imposes
-#     nothing, which is the "extra types in the query" rule.
-# The q side is COLLATE "C" to match the columns' byte-oriented collation, so
-# identity here is the same identity the primary key uses.
-_SCOPE_FILTER = """AND EXISTS (
-          SELECT 1 FROM memory_scopes any_scope
-          WHERE any_scope.memory_id = memories.id
-      )
-      AND (
-          EXISTS (
-              SELECT 1 FROM memory_scopes global_scope
-              WHERE global_scope.memory_id = memories.id
-                AND global_scope.scope_type = %(global_type)s
-                AND global_scope.scope_key = %(global_key)s
-          )
-          OR NOT EXISTS (
-              SELECT 1
-              FROM memory_scopes ms
-              LEFT JOIN unnest(%(scope_types)s::text[], %(scope_keys)s::text[])
-                     AS q(scope_type, scope_key)
-                ON q.scope_type COLLATE "C" = ms.scope_type
-               AND q.scope_key COLLATE "C" = ms.scope_key
-              WHERE ms.memory_id = memories.id
-              GROUP BY ms.scope_type
-              HAVING count(q.scope_key) = 0
-          )
-      )"""
-
-
 async def _hydrate_scopes(client: PostgresClient, memory_ids: list) -> dict:
     """Attach scopes to a result page in one query.
 
@@ -247,7 +134,7 @@ def _build_scope_filter(scopes: ScopeSet | None) -> tuple[str, dict[str, Any]]:
     if not scopes:
         raise InvalidScopeError("an empty scope filter matches nothing — omit the filter to search every scope")
 
-    return _SCOPE_FILTER, {
+    return sql.SCOPE_FILTER, {
         "scope_types": [ref.scope_type for ref in scopes],
         "scope_keys": [ref.scope_key for ref in scopes],
         "global_type": GLOBAL_TYPE,
@@ -322,21 +209,21 @@ def _build_memory_filters(
     filters: list[str] = []
     params: dict[str, Any] = {}
     if depth_layer:
-        filters.append("AND depth_layer = %(depth_layer)s")
+        filters.append(sql.FILTER_DEPTH_LAYER)
         params["depth_layer"] = depth_layer
     if subtype:
-        filters.append("AND subtype = %(subtype)s")
+        filters.append(sql.FILTER_SUBTYPE)
         params["subtype"] = subtype
     if domain:
-        filters.append("AND domain = %(domain)s")
+        filters.append(sql.FILTER_DOMAIN)
         params["domain"] = domain
 
     if origin is not None:
-        filters.append("AND origin = %(origin)s")
+        filters.append(sql.FILTER_ORIGIN)
         params["origin"] = validate_origin(origin)
 
     if metadata_filter is not None:
-        filters.append("AND metadata @> %(metadata_filter)s::jsonb")
+        filters.append(sql.FILTER_METADATA)
         params["metadata_filter"] = Jsonb(validate_metadata_filter(metadata_filter))
 
     scope_sql, scope_params = _build_scope_filter(scopes)
@@ -400,9 +287,9 @@ async def hybrid_search(
     }
     params.update(filter_params)
 
-    sql = RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
+    statement = sql.RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
-    rows = await client.execute(sql, params)
+    rows = await client.execute(statement, params)
     scored_rows = _rank_candidates(rows, query, limit)
 
     if scored_rows:
@@ -432,21 +319,6 @@ async def hybrid_search(
         )
         for row, final_score in scored_rows
     ]
-
-
-VECTOR_ONLY_TEMPLATE = """
-SELECT
-    id, content, summary, type, subtype, domain, tenant, depth_layer, decay_score, trust_score, metadata,
-    origin,
-    access_count, created_at, accessed_at,
-    1 - (embedding::vector({dim}) <=> %(embedding)s::vector({dim})) AS similarity
-FROM memories
-WHERE deleted_at IS NULL
-  AND tenant = %(tenant)s
-  {{filters}}
-ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})
-LIMIT %(limit)s;
-"""
 
 
 async def vector_search(
@@ -488,9 +360,9 @@ async def vector_search(
     }
     params.update(filter_params)
 
-    sql = VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
+    statement = sql.VECTOR_ONLY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
-    rows = await client.execute(sql, params)
+    rows = await client.execute(statement, params)
     scopes_by_memory = await _hydrate_scopes(client, [row["id"] for row in rows])
 
     return [
@@ -515,15 +387,6 @@ async def vector_search(
         )
         for row in rows
     ]
-
-
-_COUNT_QUERY = """
-SELECT count(*) AS total
-FROM memories
-WHERE deleted_at IS NULL
-  AND tenant = %(tenant)s
-  {filters}
-"""
 
 
 async def count_memories(
@@ -564,5 +427,5 @@ async def count_memories(
         indent="  ",
     )
     params = {"tenant": tenant, **filter_params}
-    row = await client.execute_one(_COUNT_QUERY.format(filters=filter_sql), params)
+    row = await client.execute_one(sql.COUNT.format(filters=filter_sql), params)
     return int(row["total"]) if row else 0

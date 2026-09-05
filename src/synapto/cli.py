@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from synapto import __version__
+from synapto.sql import cli as sql
 
 logger = logging.getLogger("synapto.cli")
 
@@ -433,7 +434,7 @@ def doctor() -> None:
 
         client = PostgresClient(config.pg_dsn, min_size=1, max_size=1)
         await client.connect()
-        row = await client.execute_one("SELECT version() AS v;")
+        row = await client.execute_one(sql.SERVER_VERSION)
         await client.close()
         return row["v"]
 
@@ -450,9 +451,7 @@ def doctor() -> None:
 
         client = PostgresClient(config.pg_dsn, min_size=1, max_size=1)
         await client.connect()
-        row = await client.execute_one(
-            "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
-        )
+        row = await client.execute_one(sql.PGVECTOR_VERSION)
         await client.close()
         return row
 
@@ -626,13 +625,7 @@ def export_cmd(tenant: str | None, output: str) -> None:
         await client.connect()
 
         t = await _resolve_cli_tenant(client, tenant, config)
-        rows = await client.execute(
-            """
-            SELECT id, content, summary, type, subtype, domain, tenant, depth_layer, metadata, created_at, accessed_at
-            FROM memories WHERE deleted_at IS NULL AND tenant = %s ORDER BY created_at;
-            """,
-            (t,),
-        )
+        rows = await client.execute(sql.EXPORT_MEMORIES, (t,))
 
         data = [
             {k: str(v) if k in ("id", "created_at", "accessed_at") else v for k, v in row.items()}
@@ -695,11 +688,7 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
                 continue
             emb = await provider.embed_one(content)
             await client.execute(
-                """
-                INSERT INTO memories
-                    (content, summary, embedding, embedding_dim, type, subtype, domain, tenant, depth_layer, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                """,
+                sql.IMPORT_MEMORY,
                 (
                     content,
                     item.get("summary"),
@@ -943,12 +932,7 @@ def migrate_memories(dry_run: bool, home: str | None) -> None:
                     async with client.acquire() as conn:
                         async with conn.transaction():
                             await conn.execute(
-                                """
-                                INSERT INTO memories
-                                    (content, summary, embedding, embedding_dim,
-                                     type, subtype, domain, tenant, depth_layer, metadata)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                                """,
+                                sql.IMPORT_MEMORY,
                                 (
                                     mem.content,
                                     mem.summary,
