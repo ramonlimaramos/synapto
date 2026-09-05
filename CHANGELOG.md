@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- `hybrid_search` ordered its final page by raw RRF plus the HRR boost, discarding the `decay_score × trust_score × layer_weight` product the SQL had used to pick candidates; `core` outranked `working` only when the tie happened to fall that way, and `trust_feedback` tuned a multiplier the final sort never read. The weight is now selected from SQL and applied as `(rrf + hrr) × weight` (#87)
 - `assert_release_contract.py` resolved its `git ls-remote` runner at definition time, so the command-line tests reached the real remote and broke as soon as the declared version had a published tag; the runner is now resolved at call time and the tests never leave the process
 
 ## [0.7.0] - 2026-09-04
