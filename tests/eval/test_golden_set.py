@@ -26,6 +26,7 @@ from uuid import UUID
 import pytest
 
 from synapto import server
+from synapto.db.migrations import run_migrations
 from synapto.scopes import ScopeSet
 from synapto.search.hybrid import hybrid_search
 from tests.eval import harness
@@ -52,11 +53,17 @@ DELETE_BANKS = "DELETE FROM memory_banks WHERE bank_name LIKE %s;"
 
 @pytest.fixture
 async def corpus(pg, provider, cache, monkeypatch) -> dict[UUID, str]:
-    """Seed the corpus under ``acme/eval`` and map each stored id back to its key."""
+    """Seed the corpus under ``acme/eval`` and map each stored id back to its key.
+
+    Migrations run first because ``tests/eval`` sorts before ``tests/unit`` and
+    may be the first thing to touch a fresh CI database; ``run_migrations`` is
+    idempotent, so on a migrated database it is a no-op.
+    """
     monkeypatch.setattr(server, "_pg", pg)
     monkeypatch.setattr(server, "_provider", provider)
     monkeypatch.setattr(server, "_cache", cache)
     monkeypatch.setattr(server, "_config", SimpleNamespace(default_tenant=TENANT))
+    await run_migrations(pg)
     await _clean(pg)
     keys_by_id: dict[UUID, str] = {}
     for memory in harness.load_corpus():
