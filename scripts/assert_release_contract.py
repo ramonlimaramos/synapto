@@ -127,15 +127,22 @@ def _git_ls_remote(command: Sequence[str]) -> str:
     return result.stdout
 
 
-def assert_tag_is_free(version: str, commit: str, runner: CommandRunner = _git_ls_remote) -> str:
+def assert_tag_is_free(version: str, commit: str, runner: CommandRunner | None = None) -> str:
     """Return the tag this release will create, if it is safe to create it.
 
     The remote is queried rather than the local ref namespace: a shallow or
     stale checkout would report a tag as absent that the push then rejects,
     which is the failure this check exists to move earlier.
+
+    ``runner`` defaults to :func:`_git_ls_remote` at call time, not at
+    definition time, so a test that replaces the module attribute really does
+    keep the check off the network. The earlier def-time default let the
+    command-line tests pass only while no tag for the declared version existed
+    on the remote — they broke the moment 0.7.0 was released.
     """
+    query = runner or _git_ls_remote
     tag = f"v{version}"
-    output = runner(["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"])
+    output = query(["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"])
 
     existing = output.split("\t")[0].strip() if output.strip() else ""
     if existing and existing != commit:
@@ -146,7 +153,7 @@ def assert_tag_is_free(version: str, commit: str, runner: CommandRunner = _git_l
     return tag
 
 
-def assert_release_contract(root: Path, commit: str, runner: CommandRunner = _git_ls_remote) -> str:
+def assert_release_contract(root: Path, commit: str, runner: CommandRunner | None = None) -> str:
     version = assert_versions_agree(root)
     tag = assert_tag_is_free(version, commit, runner)
     print(f"release contract verified: {version} may be published as {tag}")
