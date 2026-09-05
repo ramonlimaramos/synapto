@@ -26,36 +26,7 @@ from uuid import UUID
 
 from synapto.db.postgres import PostgresClient
 from synapto.scopes import ScopeRef, ScopeSet
-
-# ---------------------------------------------------------------------------
-# SQL constants
-# ---------------------------------------------------------------------------
-
-_LOCK_MEMORY = """
-    SELECT id FROM memories WHERE id = %(memory_id)s FOR UPDATE;
-"""
-
-_INSERT = """
-    INSERT INTO memory_scopes (memory_id, scope_type, scope_key, source)
-    VALUES (%(memory_id)s, %(scope_type)s, %(scope_key)s, %(source)s)
-    ON CONFLICT (memory_id, scope_type, scope_key) DO NOTHING;
-"""
-
-_DELETE_ALL = "DELETE FROM memory_scopes WHERE memory_id = %(memory_id)s;"
-
-_SELECT_FOR_MEMORY = """
-    SELECT scope_type, scope_key
-    FROM memory_scopes
-    WHERE memory_id = %(memory_id)s
-    ORDER BY scope_type, scope_key;
-"""
-
-_SELECT_FOR_MEMORIES = """
-    SELECT memory_id, scope_type, scope_key
-    FROM memory_scopes
-    WHERE memory_id = ANY(%(memory_ids)s::uuid[])
-    ORDER BY memory_id, scope_type, scope_key;
-"""
+from synapto.sql import scopes as sql
 
 DEFAULT_SOURCE = "explicit"
 
@@ -101,9 +72,9 @@ class ScopeRepository:
         memory_uuid = _as_uuid(memory_id)
         await self._lock_memory(conn, memory_uuid)
 
-        await conn.execute(_DELETE_ALL, {"memory_id": memory_uuid})
+        await conn.execute(sql.DELETE_ALL, {"memory_id": memory_uuid})
         for ref in scopes:
-            await conn.execute(_INSERT, self._insert_params(memory_uuid, ref, source))
+            await conn.execute(sql.INSERT, self._insert_params(memory_uuid, ref, source))
         return len(scopes)
 
     async def clear_on(self, conn, memory_id: UUID | str) -> None:
@@ -114,7 +85,7 @@ class ScopeRepository:
         """
         memory_uuid = _as_uuid(memory_id)
         await self._lock_memory(conn, memory_uuid)
-        await conn.execute(_DELETE_ALL, {"memory_id": memory_uuid})
+        await conn.execute(sql.DELETE_ALL, {"memory_id": memory_uuid})
 
     # -- self-managed wrappers ----------------------------------------------
 
@@ -135,7 +106,7 @@ class ScopeRepository:
 
     async def get_for_memory(self, memory_id: UUID | str) -> ScopeSet:
         """Return one memory's scopes, ordered by ``(scope_type, scope_key)``."""
-        rows = await self._db.execute(_SELECT_FOR_MEMORY, {"memory_id": _as_uuid(memory_id)})
+        rows = await self._db.execute(sql.SELECT_FOR_MEMORY, {"memory_id": _as_uuid(memory_id)})
         return ScopeSet(scopes=tuple(ScopeRef(row["scope_type"], row["scope_key"]) for row in rows))
 
     async def get_for_memories(self, memory_ids: Sequence[UUID | str]) -> dict[UUID, ScopeSet]:
@@ -157,7 +128,7 @@ class ScopeRepository:
             return {}
 
         unique_ids = list(dict.fromkeys(_as_uuid(memory_id) for memory_id in memory_ids))
-        rows = await self._db.execute(_SELECT_FOR_MEMORIES, {"memory_ids": unique_ids})
+        rows = await self._db.execute(sql.SELECT_FOR_MEMORIES, {"memory_ids": unique_ids})
 
         grouped: dict[UUID, list[ScopeRef]] = {}
         for row in rows:
@@ -170,7 +141,7 @@ class ScopeRepository:
 
     @staticmethod
     async def _lock_memory(conn, memory_id: UUID) -> None:
-        cursor = await conn.execute(_LOCK_MEMORY, {"memory_id": memory_id})
+        cursor = await conn.execute(sql.LOCK_MEMORY, {"memory_id": memory_id})
         if await cursor.fetchone() is None:
             raise UnknownMemoryError(f"memory {memory_id} does not exist")
 

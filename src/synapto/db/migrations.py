@@ -28,6 +28,8 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import TYPE_CHECKING
 
+from synapto.sql import migrations as sql
+
 if TYPE_CHECKING:  # keeps the module importable without third-party dependencies,
     # which is what lets the packaged-artifact verifier check a --no-deps install
     from synapto.db.postgres import PostgresClient
@@ -51,16 +53,6 @@ class MigrationDiscoveryError(RuntimeError):
     silently reports success against an uninitialized schema, which is the
     failure mode this replaces.
     """
-
-
-TRACKING_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS synapto_migrations (
-    id SERIAL PRIMARY KEY,
-    filename VARCHAR(255) NOT NULL UNIQUE,
-    checksum VARCHAR(64) NOT NULL,
-    applied_at TIMESTAMPTZ DEFAULT now()
-);
-"""
 
 
 @dataclass(frozen=True)
@@ -205,13 +197,13 @@ def discover_migrations(migrations_dir: Traversable | None = None) -> list[Migra
 
 
 async def _ensure_tracking_table(client: PostgresClient) -> None:
-    await client.execute(TRACKING_TABLE_DDL)
+    await client.execute(sql.TRACKING_TABLE_DDL)
 
 
 async def get_applied_migrations(client: PostgresClient) -> dict[str, str]:
     """Return a mapping of filename → checksum for all applied migrations."""
     await _ensure_tracking_table(client)
-    rows = await client.execute("SELECT filename, checksum FROM synapto_migrations ORDER BY filename;")
+    rows = await client.execute(sql.SELECT_APPLIED)
     return {row["filename"]: row["checksum"] for row in rows}
 
 
@@ -257,11 +249,7 @@ async def _apply_migrations(
         logger.info("applying migration: %s", m.filename)
         async with client.acquire() as conn:
             await conn.execute(m.up_sql)
-            await conn.execute(
-                "INSERT INTO synapto_migrations (filename, checksum) VALUES (%s, %s) "
-                "ON CONFLICT (filename) DO NOTHING;",
-                (m.filename, m.checksum),
-            )
+            await conn.execute(sql.RECORD_APPLIED, (m.filename, m.checksum))
         applied_files.append(m.filename)
         logger.info("migration applied: %s", m.filename)
 
@@ -295,10 +283,7 @@ async def migrate_down(
         logger.info("rolling back migration: %s", m.filename)
         async with client.acquire() as conn:
             await conn.execute(m.down_sql)
-            await conn.execute(
-                "DELETE FROM synapto_migrations WHERE filename = %s;",
-                (m.filename,),
-            )
+            await conn.execute(sql.FORGET_APPLIED, (m.filename,))
         rolled_back.append(m.filename)
         logger.info("migration rolled back: %s", m.filename)
 
@@ -343,7 +328,7 @@ async def _migrate_from_legacy_schema(client: PostgresClient) -> bool:
     Returns True if legacy migration was detected and bridged.
     """
     try:
-        row = await client.execute_one("SELECT 1 FROM information_schema.tables WHERE table_name = 'synapto_schema';")
+        row = await client.execute_one(sql.LEGACY_SCHEMA_EXISTS)
         if not row:
             return False
 
@@ -351,11 +336,7 @@ async def _migrate_from_legacy_schema(client: PostgresClient) -> bool:
         await _ensure_tracking_table(client)
         applied = await get_applied_migrations(client)
         if "001_initial.sql" not in applied:
-            await client.execute(
-                "INSERT INTO synapto_migrations (filename, checksum) VALUES (%s, %s) "
-                "ON CONFLICT (filename) DO NOTHING;",
-                ("001_initial.sql", "legacy"),
-            )
+            await client.execute(sql.RECORD_APPLIED, ("001_initial.sql", "legacy"))
             logger.info("legacy synapto_schema detected — marked 001_initial.sql as applied")
         return True
     except Exception:
@@ -401,20 +382,8 @@ async def get_schema_version(client: PostgresClient) -> int | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# HNSW index management (unchanged — dimension-dependent, not migratable)
-# ---------------------------------------------------------------------------
-
-HNSW_INDEX_TEMPLATE = """
-    CREATE INDEX IF NOT EXISTS idx_{table}_embedding_{dim}
-    ON {table} USING hnsw ((embedding::vector({dim})) vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-"""
-
-
 async def ensure_hnsw_index(client: PostgresClient, dim: int) -> None:
     """Create HNSW indexes for a specific embedding dimension if they don't exist."""
     for table in ("memories", "entities"):
-        sql = HNSW_INDEX_TEMPLATE.format(table=table, dim=dim)
-        await client.execute(sql)
+        await client.execute(sql.HNSW_INDEX_TEMPLATE.format(table=table, dim=dim))
     logger.info("HNSW indexes ensured for dim=%d", dim)

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- Every SQL statement now lives in the `synapto.sql` package, one module per owner (`memories`, `entities`, `relations`, `scopes`, `tenants`, `banks`, `metrics`, `search`, `graph`, `migrations`, `cli`), and those modules hold nothing but a docstring and string constants. Repositories, search and the CLI import them (`from synapto.sql import memories as sql`) and choose between named fragments instead of appending predicate text at runtime; a guard test walks the AST and fails when a statement or fragment appears anywhere else, or when anything but a constant appears inside the package. Behavior is unchanged — the same statements run with the same parameters. Public names that moved: `synapto.search.graph.TRAVERSE_QUERY` / `TRAVERSE_BOTH_DIRECTIONS_QUERY` / `IMPACT_QUERY` → `synapto.sql.graph.TRAVERSE` / `TRAVERSE_BOTH_DIRECTIONS` / `IMPACT`; `synapto.search.hybrid.RRF_QUERY_TEMPLATE` / `VECTOR_ONLY_TEMPLATE` → `synapto.sql.search`; `synapto.db.migrations.TRACKING_TABLE_DDL` / `HNSW_INDEX_TEMPLATE` → `synapto.sql.migrations` (#97)
+
 ### Fixed
 
 - `hybrid_search` ordered its final page by raw RRF plus the HRR boost, discarding the `decay_score × trust_score × layer_weight` product the SQL had used to pick candidates; `core` outranked `working` only when the tie happened to fall that way, and `trust_feedback` tuned a multiplier the final sort never read. The weight is now selected from SQL and applied as `(rrf + hrr) × weight` (#87)

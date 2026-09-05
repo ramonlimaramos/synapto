@@ -15,37 +15,8 @@ explicit two-step operation rather than an accidental one.
 from __future__ import annotations
 
 from synapto.db.postgres import PostgresClient
+from synapto.sql import tenants as sql
 from synapto.tenants import validate_tenant
-
-_RESOLVE = """
-    SELECT canonical FROM tenant_aliases WHERE alias = %s;
-"""
-
-_LOCK_TABLE = """
-    LOCK TABLE tenant_aliases IN SHARE ROW EXCLUSIVE MODE;
-"""
-
-_IS_ALIAS = """
-    SELECT canonical FROM tenant_aliases WHERE alias = %s FOR UPDATE;
-"""
-
-_HAS_ALIASES = """
-    SELECT 1 FROM tenant_aliases WHERE canonical = %s LIMIT 1;
-"""
-
-_INSERT = """
-    INSERT INTO tenant_aliases (alias, canonical) VALUES (%s, %s)
-    ON CONFLICT (alias) DO UPDATE SET canonical = EXCLUDED.canonical
-    RETURNING alias, canonical;
-"""
-
-_LIST = """
-    SELECT alias, canonical FROM tenant_aliases ORDER BY canonical, alias;
-"""
-
-_MOVE_MEMORIES = """
-    UPDATE memories SET tenant = %(canonical)s WHERE tenant = %(alias)s;
-"""
 
 
 class TenantAliasError(RuntimeError):
@@ -65,7 +36,7 @@ class TenantAliasRepository:
         majority of reads name a tenant that was never merged, and treating that
         as a miss worth reporting would make the common path the noisy one.
         """
-        row = await self._db.execute_one(_RESOLVE, (tenant,))
+        row = await self._db.execute_one(sql.RESOLVE, (tenant,))
         return row["canonical"] if row else tenant
 
     async def register(self, alias: str, canonical: str) -> None:
@@ -87,9 +58,9 @@ class TenantAliasRepository:
             raise TenantAliasError(f"tenant {alias!r} cannot be an alias of itself")
 
         async with self._db.acquire() as conn:
-            await conn.execute(_LOCK_TABLE)
+            await conn.execute(sql.LOCK_TABLE)
             await self._reject_chain(conn, alias, canonical)
-            await conn.execute(_INSERT, (alias, canonical))
+            await conn.execute(sql.INSERT, (alias, canonical))
 
     @staticmethod
     async def _reject_chain(conn, alias: str, canonical: str) -> None:
@@ -99,7 +70,7 @@ class TenantAliasRepository:
         registration cannot slip between the read and the insert and build the
         chain this refuses.
         """
-        cursor = await conn.execute(_IS_ALIAS, (canonical,))
+        cursor = await conn.execute(sql.IS_ALIAS, (canonical,))
         existing = await cursor.fetchone()
         if existing:
             raise TenantAliasError(
@@ -107,7 +78,7 @@ class TenantAliasRepository:
                 f"point {alias!r} at {existing['canonical']!r} instead of creating a chain"
             )
 
-        cursor = await conn.execute(_HAS_ALIASES, (alias,))
+        cursor = await conn.execute(sql.HAS_ALIASES, (alias,))
         if await cursor.fetchone():
             raise TenantAliasError(
                 f"{alias!r} is already the canonical tenant of other aliases; "
@@ -116,7 +87,7 @@ class TenantAliasRepository:
 
     async def list_aliases(self) -> list[dict]:
         """Every recorded mapping, ordered by canonical then alias."""
-        return await self._db.execute(_LIST)
+        return await self._db.execute(sql.LIST)
 
     async def merge(self, alias: str, canonical: str) -> int:
         """Move every memory from ``alias`` to ``canonical`` and record the alias.
@@ -135,9 +106,9 @@ class TenantAliasRepository:
             raise TenantAliasError(f"tenant {alias!r} cannot be an alias of itself")
 
         async with self._db.acquire() as conn:
-            await conn.execute(_LOCK_TABLE)
+            await conn.execute(sql.LOCK_TABLE)
             await self._reject_chain(conn, alias, canonical)
-            cursor = await conn.execute(_MOVE_MEMORIES, {"alias": alias, "canonical": canonical})
+            cursor = await conn.execute(sql.MOVE_MEMORIES, {"alias": alias, "canonical": canonical})
             moved = cursor.rowcount
-            await conn.execute(_INSERT, (alias, canonical))
+            await conn.execute(sql.INSERT, (alias, canonical))
         return moved

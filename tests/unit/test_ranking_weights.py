@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from synapto.search.hybrid import DEPTH_BOOST, RRF_QUERY_TEMPLATE, _rank_candidates, hybrid_search
+from synapto.search.hybrid import DEPTH_BOOST, _rank_candidates, hybrid_search
+from synapto.sql.search import RRF_QUERY_TEMPLATE
 
 TENANT = "acme/ranking-weights"
 CONTENT = "the deploy pipeline requires a signed tag before it publishes"
