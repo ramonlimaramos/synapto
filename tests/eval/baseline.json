@@ -1,0 +1,47 @@
+{
+  "corpus_digest": "2785dfaa6460eb29",
+  "metrics": {
+    "decay": {
+      "cases": 6,
+      "mrr_at_10": 0.3194444444444444,
+      "recall_at_5": 1.0
+    },
+    "general": {
+      "cases": 18,
+      "mrr_at_10": 0.1833994708994709,
+      "recall_at_5": 0.4444444444444444
+    },
+    "hrr": {
+      "cases": 6,
+      "mrr_at_10": 0.2515873015873016,
+      "recall_at_5": 0.6666666666666666
+    },
+    "layer": {
+      "cases": 6,
+      "mrr_at_10": 0.6722222222222222,
+      "recall_at_5": 1.0
+    },
+    "metadata": {
+      "cases": 6,
+      "mrr_at_10": 1.0,
+      "recall_at_5": 1.0
+    },
+    "overall": {
+      "cases": 55,
+      "mrr_at_10": 0.5138311688311689,
+      "recall_at_5": 0.7818181818181819
+    },
+    "scopes": {
+      "cases": 7,
+      "mrr_at_10": 0.7857142857142857,
+      "recall_at_5": 1.0
+    },
+    "trust": {
+      "cases": 6,
+      "mrr_at_10": 1.0,
+      "recall_at_5": 1.0
+    }
+  },
+  "provider": "test/deterministic",
+  "tolerance": 0.02
+}

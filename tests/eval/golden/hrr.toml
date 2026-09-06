@@ -1,0 +1,25 @@
+# Multi-entity, structural queries; the target names every entity the query does.
+
+[[case]]
+query = "acme/billing acme/ledger invoice events"
+expected = "hrr-01-target"
+
+[[case]]
+query = "acme/auth tokens verified by acme/gateway"
+expected = "hrr-02-target"
+
+[[case]]
+query = "acme/web acme/search through the gateway"
+expected = "hrr-03-target"
+
+[[case]]
+query = "acme/notify preferences from acme/auth"
+expected = "hrr-04-target"
+
+[[case]]
+query = "acme/worker outbox of acme/api to Kafka"
+expected = "hrr-05-target"
+
+[[case]]
+query = "acme/docs built from acme/api schema and acme/web stories"
+expected = "hrr-06-target"

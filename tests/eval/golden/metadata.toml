@@ -1,0 +1,31 @@
+# Identical content under different metadata; only the metadata filter separates them.
+
+[[case]]
+query = "acme/api elevated errors incident"
+expected = "metadata-errors-timeout"
+metadata_filter = { failure_class = "timeout" }
+
+[[case]]
+query = "acme/api elevated errors incident"
+expected = "metadata-errors-auth"
+metadata_filter = { failure_class = "auth" }
+
+[[case]]
+query = "acme/billing outage postmortem"
+expected = "metadata-outage-high"
+metadata_filter = { service = "acme/billing", severity = "high" }
+
+[[case]]
+query = "acme/worker retry storm jitter"
+expected = "metadata-storm-202"
+metadata_filter = { ticket = "ACME-202" }
+
+[[case]]
+query = "acme/search index rebuild maintenance window"
+expected = "metadata-rebuild-verified"
+metadata_filter = { verified = true }
+
+[[case]]
+query = "acme/gateway proxy upgrade notes"
+expected = "metadata-upgrade-v4"
+metadata_filter = { version = 4 }

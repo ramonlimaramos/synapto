@@ -18,6 +18,13 @@ are spelled out twice — once to select ``quality_weight``, once to order — a
 ``synapto.search.hybrid.DEPTH_BOOST`` mirrors them; a test asserts the two
 agree, so nothing generates the ``CASE`` arms.
 
+**Ties.** Equal scores are common — identical content stored twice, templated
+notes with the same term overlap — and each ``LIMIT`` above would otherwise
+cut an arbitrary subset of a tie. All three ``ORDER BY`` clauses therefore end
+in ``created_at DESC, id``: among equals the newest memory wins, and the same
+data always returns the same order, which is what lets ``tests/eval`` hold a
+baseline against this query.
+
 **Applicability (``SCOPE_FILTER``).** One correlated predicate so no join fans
 out and RRF ranking stays intact. Reading it inside-out: the memory must have at
 least one scope, which excludes unscoped legacy rows whenever a filter is
@@ -39,7 +46,7 @@ WITH semantic_search AS (
     WHERE deleted_at IS NULL
       AND tenant = %(tenant)s
       {{filters}}
-    ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim})
+    ORDER BY embedding::vector({dim}) <=> %(embedding)s::vector({dim}), created_at DESC, id
     LIMIT 20
 ),
 keyword_search AS (
@@ -53,7 +60,7 @@ keyword_search AS (
       AND tenant = %(tenant)s
       AND tsv @@ plainto_tsquery('english', %(query)s)
       {{filters}}
-    ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(query)s)) DESC
+    ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(query)s)) DESC, created_at DESC, id
     LIMIT 20
 )
 SELECT
@@ -95,7 +102,9 @@ ORDER BY
         WHEN 'working' THEN 1.0
         WHEN 'ephemeral' THEN 0.5
         ELSE 1.0
-    END DESC
+    END DESC,
+    m.created_at DESC,
+    m.id
 LIMIT %(limit)s;
 """
 

@@ -1,0 +1,73 @@
+# Paraphrased questions against one target each, with the whole corpus as distractors.
+
+[[case]]
+query = "how many retries does acme/api make"
+expected = "general-01"
+
+[[case]]
+query = "which acme/web routes are server rendered"
+expected = "general-02"
+
+[[case]]
+query = "what currency does acme/billing charge in"
+expected = "general-03"
+
+[[case]]
+query = "acme/auth account lockout after failed logins"
+expected = "general-04"
+
+[[case]]
+query = "acme/search product codes with dashes"
+expected = "general-05"
+
+[[case]]
+query = "acme/notify duplicate alert suppression"
+expected = "general-06"
+
+[[case]]
+query = "how does acme/ledger store amounts"
+expected = "general-07"
+
+[[case]]
+query = "acme/gateway internal headers stripped"
+expected = "general-08"
+
+[[case]]
+query = "how does acme/worker scale"
+expected = "general-09"
+
+[[case]]
+query = "acme/docs old anchors after rename"
+expected = "general-10"
+
+[[case]]
+query = "acme/api connection pool size"
+expected = "general-11"
+
+[[case]]
+query = "acme/web preview environment per branch"
+expected = "general-12"
+
+[[case]]
+query = "how are refunds handled in acme/billing"
+expected = "general-13"
+
+[[case]]
+query = "does acme/auth support passkeys"
+expected = "general-14"
+
+[[case]]
+query = "acme/search query timeout partial results"
+expected = "general-15"
+
+[[case]]
+query = "acme/notify webhook signature replay"
+expected = "general-16"
+
+[[case]]
+query = "acme/ledger trial balance export"
+expected = "general-17"
+
+[[case]]
+query = "acme/gateway load shedding retry after"
+expected = "general-18"
