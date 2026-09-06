@@ -407,6 +407,14 @@ SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test SYNAPTO_EVAL_WRITE_BASEL
 
 Commit the resulting `baseline.json` next to the change that moved it. Keep the corpus synthetic (`acme/*` only); a test rejects anything else.
 
+The same harness drives a **ranking-signal ablation**: each signal (HRR boost, decay, trust, layer weight, vector leg, keyword leg) is switched off in turn — as a variant of the production SQL and a zeroed boost, applied in the test process only — and the golden set is re-run, with a noise floor from five shuffled-insertion runs deciding what counts as a real move. It is opt-in because it takes tens of seconds and produces a document rather than a pass/fail:
+
+```bash
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test SYNAPTO_EVAL_ABLATION=1 uv run pytest tests/eval
+```
+
+The report lands in `docs/eval/ablation.md`; `docs/eval/README.md` holds the reading of the latest run and the follow-up issues it produced.
+
 ## License
 
 MIT
