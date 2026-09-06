@@ -119,10 +119,10 @@ BLOCKS = (PRIMARY, CONDITIONAL)
 CONFIGURATIONS: tuple[Configuration, ...] = (*PRIMARY.configurations, RRF_ONLY, *CONDITIONAL.configurations[1:])
 
 LAYER_WEIGHT = """CASE m.depth_layer
-        WHEN 'core' THEN 1.5
-        WHEN 'stable' THEN 1.2
+        WHEN 'core' THEN 1.3
+        WHEN 'stable' THEN 1.25
         WHEN 'working' THEN 1.0
-        WHEN 'ephemeral' THEN 0.5
+        WHEN 'ephemeral' THEN 0.7
         ELSE 1.0
     END"""
 DECAY_WEIGHT = "m.decay_score"

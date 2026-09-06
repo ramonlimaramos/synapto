@@ -283,7 +283,7 @@ When you call `recall("kafka patterns")`, Synapto runs three searches in paralle
 2. **Full-text search** (tsvector + BM25) — finds keyword matches
 3. **HRR compositional algebra** — detects if "kafka" plays a structural role in the memory, not just appears as a word
 
-The scores are combined via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — the HRR similarity enters on the same scale, worth at most one leg for an identical vector and nothing within the noise floor — then multiplied by decay, trust, and a depth-layer boost (`core` 1.5, `stable` 1.2, `working` 1.0, `ephemeral` 0.5). Filters — tenant, scopes, metadata, origin, layer, subtype — are applied inside the SQL before ranking, so a filtered recall is a smaller search, not a trimmed page.
+The scores are combined via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — the HRR similarity enters on the same scale, worth at most one leg for an identical vector and nothing within the noise floor — then multiplied by decay, trust, and a depth-layer weight (`core` 1.3, `stable` 1.25, `working` 1.0, `ephemeral` 0.7 — chosen by the sweep in `docs/eval/layer_sweep.md`). Filters — tenant, scopes, metadata, origin, layer, subtype — are applied inside the SQL before ranking, so a filtered recall is a smaller search, not a trimmed page.
 
 HRR (Holographic Reduced Representations) also enables queries that no vector database can do:
 

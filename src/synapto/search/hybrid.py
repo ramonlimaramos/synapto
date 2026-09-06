@@ -22,6 +22,15 @@ content role, extracted entities bound to the entity role — because the old
 boost compared an unbound query against a role-bound memory, which is noise by
 construction: no golden case ranked its target first on HRR similarity alone.
 
+The layer weights were chosen by measurement (#104, ``docs/eval/layer_sweep.md``),
+not by feel. Until 0.8.0 they were ``1.5 / 1.2 / 1.0 / 0.5``, a 3× spread that
+let a weaker match in a higher layer outrank the memory that answered the
+query. The binding ratio turned out to be ``stable / working``: a lower-layer
+memory that restates the query verbatim earns a full HRR leg, so the higher
+layer needs about 1.25× to keep the authoritative version first; ``core`` sits
+just above ``stable`` because the golden set never asks them to compete, and
+``ephemeral`` at 0.7 sinks a note without burying it.
+
 The SQL lives in :mod:`synapto.sql.search` as static templates; nothing here
 composes it at runtime. ``DEPTH_BOOST`` mirrors the layer weights the template
 spells out, and a test asserts the two agree — agreement by test, not by
@@ -58,10 +67,10 @@ from synapto.sql import search as sql
 logger = logging.getLogger("synapto.search.hybrid")
 
 DEPTH_BOOST = {
-    "core": 1.5,
-    "stable": 1.2,
+    "core": 1.3,
+    "stable": 1.25,
     "working": 1.0,
-    "ephemeral": 0.5,
+    "ephemeral": 0.7,
 }
 
 

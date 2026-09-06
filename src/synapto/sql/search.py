@@ -13,10 +13,11 @@ Format slots:
 reciprocal ranks and multiplies by ``decay × trust × layer_weight`` to pick the
 candidates. HRR scoring happens in Python because it reads ``bytea`` vectors
 PostgreSQL cannot rank, so the outer ``LIMIT`` is the caller's ``2 × limit`` and
-Python applies the same weight after adding the HRR boost. The layer weights
+Python applies the same weight after adding the HRR leg. The layer weights
 are spelled out twice — once to select ``quality_weight``, once to order — and
 ``synapto.search.hybrid.DEPTH_BOOST`` mirrors them; a test asserts the two
-agree, so nothing generates the ``CASE`` arms.
+agree, so nothing generates the ``CASE`` arms. Their values come from the
+sweep in ``tests/eval/layer_sweep.py`` (#104); change them there first.
 
 **Ties.** Equal scores are common — identical content stored twice, templated
 notes with the same term overlap — and each ``LIMIT`` above would otherwise
@@ -83,10 +84,10 @@ SELECT
     COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
     COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0) AS rrf_score,
     m.decay_score * m.trust_score * CASE m.depth_layer
-        WHEN 'core' THEN 1.5
-        WHEN 'stable' THEN 1.2
+        WHEN 'core' THEN 1.3
+        WHEN 'stable' THEN 1.25
         WHEN 'working' THEN 1.0
-        WHEN 'ephemeral' THEN 0.5
+        WHEN 'ephemeral' THEN 0.7
         ELSE 1.0
     END AS quality_weight
 FROM memories m
@@ -97,10 +98,10 @@ ORDER BY
     (COALESCE(1.0 / (%(rrf_k)s + s.rank), 0.0) +
      COALESCE(1.0 / (%(rrf_k)s + k.rank), 0.0)) *
     m.decay_score * m.trust_score * CASE m.depth_layer
-        WHEN 'core' THEN 1.5
-        WHEN 'stable' THEN 1.2
+        WHEN 'core' THEN 1.3
+        WHEN 'stable' THEN 1.25
         WHEN 'working' THEN 1.0
-        WHEN 'ephemeral' THEN 0.5
+        WHEN 'ephemeral' THEN 0.7
         ELSE 1.0
     END DESC,
     m.created_at DESC,
