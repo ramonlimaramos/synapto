@@ -4,19 +4,35 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from click import ClickException
 from click.testing import CliRunner
 
 from synapto.cli import _detect_mcp_clients, _offer_mcp_config, _write_mcp_config, main
 
 
 class TestDetectMcpClients:
-    def test_detects_claude_code(self, tmp_path):
+    def test_detects_claude_code_by_its_directory_and_points_at_the_file_it_reads(self, tmp_path):
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
 
         clients = _detect_mcp_clients(home=tmp_path)
-        names = [c["name"] for c in clients]
-        assert "Claude Code" in names
+        assert [(c["name"], c["path"]) for c in clients] == [("Claude Code", tmp_path / ".claude.json")]
+
+    def test_detects_claude_code_by_its_user_config_alone(self, tmp_path):
+        (tmp_path / ".claude.json").write_text("{}")
+
+        clients = _detect_mcp_clients(home=tmp_path)
+        assert [c["path"] for c in clients] == [tmp_path / ".claude.json"]
+
+    def test_never_reports_the_legacy_mcp_json_as_a_claude_code_config(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / ".mcp.json").write_text("{}")
+        (tmp_path / ".claude" / "settings.json").write_text("{}")
+
+        paths = [c["path"] for c in _detect_mcp_clients(home=tmp_path)]
+        assert tmp_path / ".claude" / ".mcp.json" not in paths
+        assert tmp_path / ".claude" / "settings.json" not in paths
 
     def test_detects_cursor(self, tmp_path):
         cursor_dir = tmp_path / ".cursor"
@@ -156,6 +172,56 @@ class TestWriteMcpConfig:
         data = json.loads(config_path.read_text())
         assert data["mcpServers"]["synapto"]["command"] == "uvx"
 
+    def test_returns_the_entry_it_wrote(self, tmp_path):
+        written = _write_mcp_config(tmp_path / "mcp.json", tenant="acme/api")
+
+        assert written == json.loads((tmp_path / "mcp.json").read_text())["mcpServers"]["synapto"]
+
+    def test_keeps_every_sibling_key_and_their_order(self, tmp_path):
+        """``~/.claude.json`` is Claude Code's own state file; only ``mcpServers.synapto`` belongs to us."""
+        config_path = tmp_path / ".claude.json"
+        before = {
+            "numStartups": 689,
+            "installMethod": "native",
+            "projects": {"/repo/acme": {"allowedTools": ["Bash"], "history": [{"display": "hi"}]}},
+            "mcpServers": {"other": {"command": "other", "args": []}},
+            "tipsHistory": {"welcome": 3},
+        }
+        config_path.write_text(json.dumps(before, indent=2) + "\n")
+
+        _write_mcp_config(config_path, tenant="acme/api", disable_claude_auto_memory=True)
+
+        after = json.loads(config_path.read_text())
+        assert list(after) == list(before)
+        assert {k: v for k, v in after.items() if k != "mcpServers"} == {
+            k: v for k, v in before.items() if k != "mcpServers"
+        }
+        assert after["mcpServers"]["other"] == before["mcpServers"]["other"]
+        assert after["mcpServers"]["synapto"]["env"]["SYNAPTO_DEFAULT_TENANT"] == "acme/api"
+
+    def test_falls_back_to_the_given_server_only_when_the_file_has_none(self, tmp_path):
+        legacy = {"command": "uv", "args": ["--directory", "/repo/synapto", "run", "synapto", "serve"]}
+        config_path = tmp_path / "mcp.json"
+
+        _write_mcp_config(config_path, tenant=None, preserve_existing_synapto=True, fallback_server=legacy)
+        assert json.loads(config_path.read_text())["mcpServers"]["synapto"]["command"] == "uv"
+
+        live = {"mcpServers": {"synapto": {"command": "uvx", "args": ["synapto", "serve"]}}}
+        config_path.write_text(json.dumps(live))
+        _write_mcp_config(config_path, tenant=None, preserve_existing_synapto=True, fallback_server=legacy)
+        assert json.loads(config_path.read_text())["mcpServers"]["synapto"]["command"] == "uvx"
+
+    @pytest.mark.parametrize("content", ['{"mcpServers": ', "[1, 2]"], ids=["truncated", "not-an-object"])
+    def test_refuses_to_rewrite_a_file_it_cannot_parse_as_an_object(self, tmp_path, content):
+        config_path = tmp_path / ".claude.json"
+        config_path.write_text(content)
+
+        with pytest.raises(ClickException, match=str(config_path)):
+            _write_mcp_config(config_path, tenant="default")
+
+        assert config_path.read_text() == content
+        assert list(tmp_path.iterdir()) == [config_path], "no temporary file left behind"
+
 
 class TestOfferMcpConfig:
     def test_disables_claude_code_auto_memory_only_for_claude(self, tmp_path, monkeypatch):
@@ -185,33 +251,96 @@ class TestOfferMcpConfig:
         assert "env" not in cursor_data["mcpServers"]["synapto"]
 
 
+def _configure(tmp_path, *args):
+    return CliRunner().invoke(main, ["configure-mcp", "--home", str(tmp_path), "--yes", *args])
+
+
 class TestConfigureMcpCommand:
-    def test_configure_mcp_upgrades_detected_claude_config(self, tmp_path):
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        config_path = claude_dir / ".mcp.json"
+    def test_configure_mcp_upgrades_the_entry_in_the_file_claude_code_reads(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        config_path = tmp_path / ".claude.json"
         config_path.write_text(json.dumps({
+            "numStartups": 1,
             "mcpServers": {
                 "synapto": {
                     "command": "uv",
                     "args": ["--directory", "/repo/synapto", "run", "synapto", "serve"],
                 }
-            }
+            },
         }))
 
-        result = CliRunner().invoke(
-            main,
-            ["configure-mcp", "--home", str(tmp_path), "--client", "claude-code", "--tenant", "project-a", "--yes"],
-        )
+        result = _configure(tmp_path, "--client", "claude-code", "--tenant", "project-a")
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         data = json.loads(config_path.read_text())
         server = data["mcpServers"]["synapto"]
+        assert data["numStartups"] == 1
         assert server["command"] == "uv"
         assert server["args"] == ["--directory", "/repo/synapto", "run", "synapto", "serve"]
         assert server["env"]["SYNAPTO_DEFAULT_TENANT"] == "project-a"
         assert server["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+        assert f"written: {config_path}" in result.output
         assert "restart your MCP client" in result.output
+        assert not (tmp_path / ".claude" / ".mcp.json").exists()
+
+    def test_configure_mcp_prints_the_entry_that_will_load(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+
+        result = _configure(tmp_path, "--client", "claude-code", "--tenant", "acme/api")
+
+        assert result.exit_code == 0, result.output
+        written = json.loads((tmp_path / ".claude.json").read_text())["mcpServers"]["synapto"]
+        printed = result.output.split("written:", 1)[1]
+        assert '"SYNAPTO_DEFAULT_TENANT": "acme/api"' in printed
+        assert '"command": "uvx"' in printed
+        assert written["env"]["SYNAPTO_DEFAULT_TENANT"] == "acme/api"
+
+    def test_configure_mcp_seeds_from_the_legacy_file_and_says_it_is_not_read(self, tmp_path):
+        """Earlier releases wrote ``~/.claude/.mcp.json``; the command carries the entry over and names the file."""
+        legacy_path = tmp_path / ".claude" / ".mcp.json"
+        legacy_path.parent.mkdir()
+        legacy_path.write_text(json.dumps({
+            "mcpServers": {
+                "synapto": {
+                    "command": "uv",
+                    "args": ["--directory", "/repo/synapto", "run", "synapto", "serve"],
+                    "env": {"SYNAPTO_DEFAULT_TENANT": "acme/api"},
+                }
+            }
+        }))
+
+        result = _configure(tmp_path, "--client", "claude-code")
+
+        assert result.exit_code == 0, result.output
+        server = json.loads((tmp_path / ".claude.json").read_text())["mcpServers"]["synapto"]
+        assert server["command"] == "uv"
+        assert server["env"] == {"SYNAPTO_DEFAULT_TENANT": "acme/api", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        assert f"{legacy_path} is not read by Claude Code" in result.output
+        assert json.loads(legacy_path.read_text())["mcpServers"]["synapto"]["command"] == "uv", "legacy left alone"
+
+    def test_configure_mcp_prefers_the_live_entry_over_the_legacy_one(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"synapto": {"command": "stale", "args": []}}})
+        )
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"synapto": {"command": "uvx", "args": ["--refresh", "synapto", "serve"]}}})
+        )
+
+        result = _configure(tmp_path, "--client", "claude-code")
+
+        assert result.exit_code == 0, result.output
+        assert json.loads((tmp_path / ".claude.json").read_text())["mcpServers"]["synapto"]["command"] == "uvx"
+
+    def test_configure_mcp_fails_cleanly_on_a_corrupt_claude_json(self, tmp_path):
+        config_path = tmp_path / ".claude.json"
+        config_path.write_text('{"numStartups": ')
+
+        result = _configure(tmp_path, "--client", "claude-code")
+
+        assert result.exit_code == 1
+        assert "is not valid JSON" in result.output
+        assert config_path.read_text() == '{"numStartups": '
 
     def test_configure_mcp_updates_cursor_without_claude_env(self, tmp_path):
         cursor_dir = tmp_path / ".cursor"
