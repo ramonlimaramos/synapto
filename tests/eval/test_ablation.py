@@ -132,7 +132,7 @@ async def twins(pg, provider):
     """Two identical memories, ``core`` then ``ephemeral``, so relevance is constant and only weight varies.
 
     Both carry an HRR vector, as a memory stored through ``remember`` would,
-    so ``full`` really does add a boost that ``no-hrr`` must remove.
+    so ``full`` really does add an HRR leg that ``no-hrr`` must remove.
 
     Migrations run first because this module sorts before ``test_golden_set``
     and may be the first thing to touch a fresh database.
@@ -167,7 +167,7 @@ class TestSwitchingASignalOffReachesTheScore:
         assert set(await _scores(pg, provider, configuration)) == set(twins)
 
     async def test_no_hrr_leaves_the_bare_weighted_rrf(self, pg, provider, twins):
-        """Both legs rank the core twin first: ``2/(k+1) × 0.5 trust × 1.5 core``, and not a boost more."""
+        """Both legs rank the core twin first: ``2/(k+1) × 0.5 trust × 1.5 core``, and not an HRR leg more."""
         core, _ = twins
         assert (await _scores(pg, provider, BY_NAME["no-hrr"]))[core] == pytest.approx(
             2 * SINGLE_LEG_RRF * DEFAULT_TRUST * 1.5

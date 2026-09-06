@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pytest
 
 from synapto.hrr.core import (
     bind,
@@ -13,6 +16,7 @@ from synapto.hrr.core import (
     encode_text,
     phases_to_bytes,
     similarity,
+    similarity_noise_floor,
     snr_estimate,
     unbind,
 )
@@ -104,6 +108,27 @@ class TestSimilarity:
         b = encode_atom("y")
         sim = similarity(a, b)
         assert -1.0 <= sim <= 1.0
+
+
+class TestSimilarityNoiseFloor:
+    def test_three_sigma_at_the_default_dim(self):
+        assert similarity_noise_floor(1024) == pytest.approx(3.0 * math.sqrt(1.0 / 2048))
+
+    def test_shrinks_with_the_square_root_of_dim(self):
+        assert similarity_noise_floor(4096) == pytest.approx(similarity_noise_floor(1024) / 2)
+
+    def test_unrelated_atoms_stay_under_it(self):
+        """A thousand unrelated pairs: at 3σ about one may cross; at 1σ roughly a sixth do."""
+        pairs = [(encode_atom(f"left-{i}"), encode_atom(f"right-{i}")) for i in range(1000)]
+
+        at_three_sigma = sum(similarity(a, b) > similarity_noise_floor(1024) for a, b in pairs)
+        at_one_sigma = sum(similarity(a, b) > similarity_noise_floor(1024, sigmas=1.0) for a, b in pairs)
+
+        assert at_three_sigma <= 5
+        assert 100 <= at_one_sigma <= 220
+
+    def test_sigmas_scale_it(self):
+        assert similarity_noise_floor(1024, sigmas=1.0) == pytest.approx(similarity_noise_floor(1024) / 3)
 
 
 class TestEncodeText:

@@ -2,14 +2,25 @@
 
 Ranking formula, in one line::
 
-    score = (rrf_vector + rrf_keyword + hrr_boost) × decay_score × trust_score × layer_weight
+    score = (rrf_vector + rrf_keyword + rrf_hrr) × decay_score × trust_score × layer_weight
 
 Relevance signals add; quality modifiers multiply the sum. The SQL orders by
 ``rrf × quality_weight`` to choose the candidates, and Python applies the same
-weight after adding the HRR boost, so pre-selection and the final order agree.
+weight after adding the HRR leg, so pre-selection and the final order agree.
 Until 0.7.0 the final sort used the raw RRF, which meant decay, trust and the
 layer weight decided only *who reached* the candidate list, never the order
 the caller saw — ``core`` outranked ``working`` by accident or not at all.
+
+HRR is a third leg on the RRF scale: a candidate gains at most what the
+first-ranked row of a SQL leg gains, ``1 / (k + 1)``, in proportion to how far
+its similarity clears the noise floor, and nothing below it. Until 0.8.0 it
+was added as ``((sim + 1) / 2) × 0.15``: an unrelated memory received +0.075
+against a largest possible RRF sum of ≈0.033, so the order inside the window
+was decided by the quality weight instead of the match (#103). The probe is
+encoded exactly as ``remember`` encodes the memory — content bound to the
+content role, extracted entities bound to the entity role — because the old
+boost compared an unbound query against a role-bound memory, which is noise by
+construction: no golden case ranked its target first on HRR similarity alone.
 
 The SQL lives in :mod:`synapto.sql.search` as static templates; nothing here
 composes it at runtime. ``DEPTH_BOOST`` mirrors the layer weights the template
@@ -30,6 +41,8 @@ from psycopg.types.json import Jsonb
 
 from synapto.db.postgres import PostgresClient
 from synapto.embeddings.base import EmbeddingProvider
+from synapto.graph.entities import extract_entities_from_text
+from synapto.hrr.core import bytes_to_phases, encode_fact, similarity, similarity_noise_floor
 from synapto.provenance import DEFAULT_ORIGIN, validate_origin
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.scopes import ScopeRepository
@@ -73,29 +86,54 @@ class SearchResult:
     origin: str = DEFAULT_ORIGIN
 
 
-def _compute_hrr_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
-    """Compute HRR similarity boost for a candidate memory.
+DEFAULT_RRF_K = 60
 
-    Returns a value in [0, hrr_weight] that is added to the RRF score before
-    the quality weight is applied. Gracefully returns 0.0 if hrr_vector is
-    None (backward compat).
+
+def _hrr_evidence(query: str, hrr_vector: bytes | None, probes: dict[int, Any]) -> float:
+    """How strongly one stored HRR vector matches the query, in [0, 1].
+
+    Zero for a row without a vector and for a row whose similarity is within
+    :func:`similarity_noise_floor` of zero — both are "no HRR match" — and one
+    for an identical vector; linear in the similarity between the two. The probe
+    is :func:`encode_fact` of the query, the encoding ``remember`` applied to
+    the memory, so like is compared with like. Probes are cached in ``probes``
+    by dimension: one search encodes the query once per distinct ``hrr_dim`` in
+    the window, not once per row.
     """
     if not hrr_vector:
         return 0.0
-    try:
-        from synapto.hrr.core import bytes_to_phases, encode_text, similarity
-
-        query_vec = encode_text(query)
-        memory_vec = bytes_to_phases(hrr_vector)
-        sim = similarity(query_vec, memory_vec)
-        # map [-1, 1] to [0, hrr_weight]
-        return ((sim + 1.0) / 2.0) * hrr_weight
-    except Exception:
-        return 0.0
+    memory_vec = bytes_to_phases(hrr_vector)
+    dim = len(memory_vec)
+    if dim not in probes:
+        probes[dim] = encode_fact(query, extract_entities_from_text(query), dim)
+    floor = similarity_noise_floor(dim)
+    return max(similarity(probes[dim], memory_vec) - floor, 0.0) / (1.0 - floor)
 
 
-def _rank_candidates(rows: list[dict[str, Any]], query: str, limit: int) -> list[tuple[dict[str, Any], float]]:
-    """Order candidates by ``(rrf + hrr) × quality_weight`` and keep the top ``limit``.
+def _hrr_leg(rows: list[dict[str, Any]], query: str, rrf_k: int) -> list[float]:
+    """Contribution of the HRR leg, one entry per row in ``rows`` order, on the RRF scale.
+
+    A candidate gains ``1 / (rrf_k + 1)`` — what the first-ranked row of a SQL
+    leg gains — scaled by its :func:`_hrr_evidence`: nothing at the noise floor,
+    exactly one leg for a perfect match, linear in between. A candidate without
+    a vector or below the floor is outside the leg and gains nothing, as a row
+    the full-text predicate rejects gains nothing from the keyword leg.
+
+    The credit follows the similarity rather than the rank because the golden
+    set says so: fusing HRR as a third reciprocal-rank leg over the window
+    scored 0.877 overall MRR@10 against 0.897 with no HRR at all, since a
+    twenty-row window ranks densely and hands a full leg to whichever candidate
+    is least weakly related; this form scored 0.921 (#103). O(n·dim) for ``n``
+    candidates.
+    """
+    probes: dict[int, Any] = {}
+    return [_hrr_evidence(query, row.get("hrr_vector"), probes) / (rrf_k + 1) for row in rows]
+
+
+def _rank_candidates(
+    rows: list[dict[str, Any]], query: str, limit: int, rrf_k: int = DEFAULT_RRF_K
+) -> list[tuple[dict[str, Any], float]]:
+    """Order candidates by ``(rrf + rrf_hrr) × quality_weight`` and keep the top ``limit``.
 
     ``quality_weight`` arrives from the SQL as ``decay × trust × layer_weight``,
     the same product the SQL ordered by to choose the candidates. A row that
@@ -103,8 +141,8 @@ def _rank_candidates(rows: list[dict[str, Any]], query: str, limit: int) -> list
     place the final order is decided; ``hybrid_search`` only feeds it.
     """
     scored = []
-    for row in rows:
-        relevance = float(row["rrf_score"]) + _compute_hrr_boost(query, row.get("hrr_vector"))
+    for row, hrr in zip(rows, _hrr_leg(rows, query, rrf_k), strict=True):
+        relevance = float(row["rrf_score"]) + hrr
         scored.append((row, relevance * float(row.get("quality_weight", 1.0))))
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return scored[:limit]
@@ -241,7 +279,7 @@ async def hybrid_search(
     depth_layer: str | None = None,
     subtype: str | None = None,
     limit: int = 10,
-    rrf_k: int = 60,
+    rrf_k: int = DEFAULT_RRF_K,
     *,
     domain: str | None = None,
     scopes: ScopeSet | None = None,
@@ -250,9 +288,10 @@ async def hybrid_search(
 ) -> list[SearchResult]:
     """Execute 3-way hybrid RRF search: vector similarity + full-text + HRR.
 
-    The final order is ``(rrf + hrr_boost) × decay × trust × layer_weight``;
+    The final order is ``(rrf + rrf_hrr) × decay × trust × layer_weight``;
     see the module docstring and :func:`_rank_candidates`. The SQL returns
-    ``2 × limit`` candidates so the HRR boost has room to reorder before the cut.
+    ``2 × limit`` candidates so the HRR leg has room to reorder before the cut,
+    and ``rrf_k`` is shared by all three legs.
 
     Filters are built before the query is embedded on purpose: an invalid
     filter must cost zero embedding calls and zero queries, not fail after
@@ -290,7 +329,7 @@ async def hybrid_search(
     statement = sql.RRF_QUERY_TEMPLATE.format(dim=dim).format(filters=filter_sql)
 
     rows = await client.execute(statement, params)
-    scored_rows = _rank_candidates(rows, query, limit)
+    scored_rows = _rank_candidates(rows, query, limit, rrf_k)
 
     if scored_rows:
         ids = [row["id"] for row, _ in scored_rows]
