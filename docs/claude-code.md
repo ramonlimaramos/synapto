@@ -12,7 +12,13 @@ synapto init
 
 2. Add to your Claude Code MCP config.
 
-**Recommended (auto-updates on every restart)** — add to `~/.claude/.mcp.json`:
+**Recommended (auto-updates on every restart)** — let the CLI write the user-scoped entry:
+
+```bash
+synapto configure-mcp --client claude-code --yes
+```
+
+That updates `mcpServers.synapto` in `~/.claude.json`, the file Claude Code reads for user-scoped servers (`~/.claude/.mcp.json` is not one of its lookup paths), leaves every other key alone and prints the entry. Written by hand it looks like this:
 
 ```json
 {
@@ -28,7 +34,7 @@ synapto init
 }
 ```
 
-**Per-project with tenant isolation** (`.claude/settings.json` in your repo root):
+**Per-project with tenant isolation** (`.mcp.json` in your repo root, the project-scoped file Claude Code reads):
 
 ```json
 {
@@ -186,9 +192,9 @@ This imports each `## Section` as a separate `stable` memory with full semantic 
 Use per-project configs with different tenants to keep memories isolated:
 
 ```bash
-# In project A's .claude/settings.json
-"env": { "SYNAPTO_DEFAULT_TENANT": "project-a" }
+# In project A's .mcp.json (repo root)
+"env": { "SYNAPTO_DEFAULT_TENANT": "acme/project-a" }
 
-# In project B's .claude/settings.json
-"env": { "SYNAPTO_DEFAULT_TENANT": "project-b" }
+# In project B's .mcp.json (repo root)
+"env": { "SYNAPTO_DEFAULT_TENANT": "acme/project-b" }
 ```

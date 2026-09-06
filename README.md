@@ -259,10 +259,11 @@ synapto maintain --merge-tenants --dry-run   # propose a tenant merge; --apply p
 synapto export -o backup.json   # export memories
 synapto import MEMORY.md --format markdown  # migrate from flat files
 synapto migrate-memories        # detect and import other agents' memory files
+synapto configure-mcp --client claude-code --tenant acme/api   # write the MCP entry to ~/.claude.json
 synapto configure-mcp --client cursor   # write the MCP entry for Cursor
 ```
 
-`configure-mcp --client claude-code` currently writes to `~/.claude/.mcp.json`, which Claude Code does not read ([#99](https://github.com/ramonlimaramos/synapto/issues/99)); use `claude mcp add` as shown above until that is fixed.
+`configure-mcp --client claude-code` updates only `mcpServers.synapto` in `~/.claude.json`, keeps every other key in that file, prints the entry that will load, and names `~/.claude/.mcp.json` if an older release left one there — Claude Code never read it.
 
 Migrations ship inside the package and `synapto serve` applies any that are pending when it starts, so upgrading the package is enough to upgrade the schema.
 

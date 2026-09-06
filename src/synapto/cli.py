@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import textwrap
 from pathlib import Path
 
 import click
@@ -20,6 +21,8 @@ CLAUDE_CODE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 MCP_CLIENT_ALL = "all"
 MCP_CLIENT_CLAUDE_CODE = "claude-code"
 MCP_CLIENT_CURSOR = "cursor"
+CLAUDE_CODE_USER_CONFIG = ".claude.json"
+CLAUDE_CODE_LEGACY_CONFIG = Path(".claude") / ".mcp.json"
 
 
 def _run(coro):
@@ -171,8 +174,16 @@ def serve() -> None:
 @click.option("--yes", "-y", is_flag=True, help="update detected MCP configs without prompting")
 @click.option("--home", default=None, type=click.Path(exists=True), hidden=True)
 def configure_mcp(client: str, tenant: str | None, yes: bool, home: str | None) -> None:
-    """Configure detected MCP clients for Synapto."""
-    clients = _detect_mcp_clients(home=Path(home) if home else None)
+    """Configure detected MCP clients for Synapto.
+
+    Claude Code reads user-scoped servers from ``~/.claude.json``; the entry is
+    written there and every other key in that file is left as it was. An entry
+    found in the legacy ``~/.claude/.mcp.json`` — a path Claude Code never
+    consulted — seeds the new one when ``~/.claude.json`` has none, and the
+    command says so. The entry that will load is printed after each write.
+    """
+    home_path = Path(home) if home else Path.home()
+    clients = _detect_mcp_clients(home=home_path)
     target = client.lower()
     selected = [
         c for c in clients
@@ -190,13 +201,18 @@ def configure_mcp(client: str, tenant: str | None, yes: bool, home: str | None) 
             click.echo(f"  skipped: {detected['name']}")
             continue
 
-        _write_mcp_config(
+        legacy = _legacy_claude_code_entry(home_path) if slug == MCP_CLIENT_CLAUDE_CODE else None
+        written = _write_mcp_config(
             detected["path"],
             tenant=tenant,
             disable_claude_auto_memory=slug == MCP_CLIENT_CLAUDE_CODE,
             preserve_existing_synapto=True,
+            fallback_server=legacy,
         )
         click.echo(f"  written: {detected['path']}")
+        if legacy is not None:
+            click.echo(f"  note: {home_path / CLAUDE_CODE_LEGACY_CONFIG} is not read by Claude Code; it can be removed")
+        click.echo(textwrap.indent(json.dumps({"synapto": written}, indent=2), "    "))
 
     click.echo("\nrestart your MCP client so the updated environment is loaded")
 
@@ -711,22 +727,58 @@ def import_cmd(file_path: str, tenant: str | None, fmt: str) -> None:
 
 
 def _detect_mcp_clients(home=None) -> list[dict]:
-    """Detect installed MCP clients and their config paths."""
+    """Detect installed MCP clients and the config file each one actually reads.
+
+    Claude Code counts as installed when ``~/.claude.json`` or the ``~/.claude``
+    directory exists; its entry always goes to ``~/.claude.json``, the file it
+    resolves user-scoped servers from. Cursor reads ``~/.cursor/mcp.json``.
+    """
     home = home or Path.home()
     clients = []
 
-    # claude code
-    for path in [home / ".claude" / ".mcp.json", home / ".claude" / "settings.json"]:
-        if path.parent.exists():
-            clients.append({"name": "Claude Code", "path": path, "key": "mcpServers"})
-            break
+    claude_path = home / CLAUDE_CODE_USER_CONFIG
+    if claude_path.exists() or (home / ".claude").is_dir():
+        clients.append({"name": "Claude Code", "path": claude_path, "key": "mcpServers"})
 
-    # cursor
     cursor_path = home / ".cursor" / "mcp.json"
     if cursor_path.parent.exists():
         clients.append({"name": "Cursor", "path": cursor_path, "key": "mcpServers"})
 
     return clients
+
+
+def _legacy_claude_code_entry(home: Path) -> dict | None:
+    """The ``synapto`` server from ``~/.claude/.mcp.json``, a file earlier releases wrote and Claude Code never read."""
+    path = home / CLAUDE_CODE_LEGACY_CONFIG
+    if not path.is_file():
+        return None
+    try:
+        servers = json.loads(path.read_text()).get("mcpServers", {})
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    entry = servers.get("synapto")
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def _read_mcp_config(path: Path) -> dict:
+    """The parsed config file, or an empty document when it does not exist.
+
+    Raises:
+        click.ClickException: the file exists and is not a JSON object. It is
+            left untouched — ``~/.claude.json`` holds unrelated client state
+            and rewriting it from a bad parse would lose it.
+    """
+    if not path.exists():
+        return {}
+    try:
+        existing = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"{path} is not valid JSON ({exc.msg} at line {exc.lineno}); fix it before rerunning"
+        ) from exc
+    if not isinstance(existing, dict):
+        raise click.ClickException(f"{path} must hold a JSON object at the top level; found {type(existing).__name__}")
+    return existing
 
 
 def _write_mcp_config(
@@ -735,16 +787,25 @@ def _write_mcp_config(
     *,
     disable_claude_auto_memory: bool = False,
     preserve_existing_synapto: bool = False,
-) -> None:
-    """Write synapto MCP config using uvx for auto-updates."""
+    fallback_server: dict | None = None,
+) -> dict:
+    """Write the ``synapto`` MCP entry and return it.
+
+    Only ``mcpServers.synapto`` is replaced; every other key in the file,
+    including other servers, is carried over unchanged. When
+    ``preserve_existing_synapto`` is set the current entry's ``command`` and
+    ``args`` are kept, falling back to ``fallback_server`` when the file has
+    none; otherwise the entry is the ``uvx --refresh`` form that picks up new
+    releases on every start. The file is written to a sibling temporary path
+    and renamed over the original so a failure mid-write cannot truncate it.
+    """
     path = Path(config_path)
-    existing = {}
-    if path.exists():
-        with open(path) as f:
-            existing = json.loads(f.read())
+    existing = _read_mcp_config(path)
 
     servers = existing.get("mcpServers", {})
     current_server = servers.get("synapto")
+    if not isinstance(current_server, dict):
+        current_server = fallback_server
     if preserve_existing_synapto and isinstance(current_server, dict):
         server_config: dict = dict(current_server)
     else:
@@ -774,8 +835,10 @@ def _write_mcp_config(
     existing["mcpServers"] = servers
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(json.dumps(existing, indent=2) + "\n")
+    staged = path.with_name(path.name + ".synapto-tmp")
+    staged.write_text(json.dumps(existing, indent=2) + "\n")
+    staged.replace(path)
+    return server_config
 
 
 def _offer_mcp_config(tenant: str = "default") -> None:
