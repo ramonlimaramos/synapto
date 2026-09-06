@@ -284,7 +284,7 @@ When you call `recall("kafka patterns")`, Synapto runs three searches in paralle
 2. **Full-text search** (tsvector + BM25) — finds keyword matches
 3. **HRR compositional algebra** — detects if "kafka" plays a structural role in the memory, not just appears as a word
 
-The scores are combined via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — the HRR similarity enters on the same scale, worth at most one leg for an identical vector and nothing within the noise floor — then multiplied by decay, trust, and a depth-layer weight (`core` 1.3, `stable` 1.25, `working` 1.0, `ephemeral` 0.7 — chosen by the sweep in `docs/eval/layer_sweep.md`). Filters — tenant, scopes, metadata, origin, layer, subtype — are applied inside the SQL before ranking, so a filtered recall is a smaller search, not a trimmed page.
+The scores are combined via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — the HRR similarity enters on the same scale, worth at most one leg for an identical vector and nothing within the noise floor — then multiplied by decay, trust, and a depth-layer weight (`core` 1.3, `stable` 1.25, `working` 1.0, `ephemeral` 0.7 — chosen by the sweep in `docs/eval/layer_sweep.md`). Ties are broken by `created_at DESC, id`, so equal scores come back in the same order every call and the newest memory wins. Filters — tenant, scopes, metadata, origin, layer, subtype — are applied inside the SQL before ranking, so a filtered recall is a smaller search, not a trimmed page.
 
 HRR (Holographic Reduced Representations) also enables queries that no vector database can do:
 
@@ -354,6 +354,8 @@ for r in results:
 | [Cursor](docs/cursor.md) | Setup and usage with Cursor |
 | [LangGraph](docs/langgraph.md) | Using Synapto as a LangGraph tool |
 | [Agno](docs/agno.md) | Using Synapto with Agno agents |
+| [Retrieval eval](docs/eval/README.md) | Golden set, ablation and layer sweep — what the ranker was measured to do |
+| [Releasing](RELEASING.md) | Version PR, preflight, dispatch, verify |
 
 ## Development
 
@@ -365,12 +367,13 @@ uv run synapto init
 uv run ruff check src/ tests/ scripts/
 ```
 
-CI runs `ruff check`, `bandit`, `pip-audit`, a wheel build verified by `scripts/verify_wheel.py`, and the test suite on Python 3.11, 3.12 and 3.13.
+CI runs `ruff check`, `bandit`, `pip-audit`, a wheel build verified by `scripts/verify_wheel.py`, and the test suite on Python 3.11, 3.12 and 3.13. A separate `release preflight` workflow runs `scripts/preflight_release.py` on every pull request: it checks `release.yml` and the GitHub `release` environment against the hardened pipeline, so a drift turns the next pull request red instead of failing on release day. Releases themselves are dispatched by hand from `main`; see [RELEASING.md](RELEASING.md).
 
-Two conventions are enforced by tests rather than review:
+Three conventions are enforced by tests rather than review:
 
 - **SQL lives in `synapto/sql/`.** Every statement is a static constant with `%(name)s` parameters, one module per owner; Python selects statements, it never composes them. `tests/unit/test_sql_lives_in_the_sql_package.py` walks the AST of both sides.
 - **Migrations are inventoried.** A new file under `synapto/_migrations/` must be added to `EXPECTED` in `tests/unit/test_migration_resources.py` and `EXPECTED_MIGRATIONS` in `scripts/verify_wheel.py` in the same commit, and a migration is never renumbered once merged. See [docs/migrations.md](docs/migrations.md).
+- **The destructive surface is declared.** Every constant in `synapto/sql/` that deletes, soft-deletes, drops, truncates or moves rows between tenants must appear in the `SURFACE` snapshot of `tests/unit/test_destructive_surface.py` with its reach — MCP tool, CLI command or library-only — and the test modules that prove refusal, happy path and "the rest was not touched". A new destructive statement fails the suite until it is declared.
 
 ### Running the tests
 
@@ -415,6 +418,14 @@ SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test SYNAPTO_EVAL_ABLATION=1 
 ```
 
 The report lands in `docs/eval/ablation.md`; `docs/eval/README.md` holds the reading of the latest run and the follow-up issues it produced.
+
+A **layer-weight sweep** uses the same harness to choose the depth-layer multipliers: ten spreads are run under `full` and `no-hrr`, a spread is admissible when every `layer` case ranks its target first, the best overall MRR@10 among admissible spreads wins, and a tie within the noise floor goes to the narrower. The current `1.3 / 1.25 / 1.0 / 0.7` came from it; change `DEPTH_BOOST` only with a new run committed next to it:
+
+```bash
+SYNAPTO_TEST_PG_DSN=postgresql://localhost/synapto_test SYNAPTO_EVAL_LAYER_SWEEP=1 uv run pytest tests/eval
+```
+
+The report lands in `docs/eval/layer_sweep.md`.
 
 ## License
 
