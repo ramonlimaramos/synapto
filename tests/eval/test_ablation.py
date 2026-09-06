@@ -20,8 +20,7 @@ from datetime import date
 import pytest
 
 from synapto.db.migrations import run_migrations
-from synapto.hrr.core import DEFAULT_DIM, encode_fact, phases_to_bytes
-from synapto.search.hybrid import hybrid_search
+from synapto.search.hybrid import DEPTH_BOOST, hybrid_search
 from synapto.sql.search import RRF_QUERY_TEMPLATE
 from tests.eval import ablation, harness, seeding
 from tests.eval.ablation import (
@@ -38,6 +37,7 @@ from tests.eval.ablation import (
     Configuration,
     Verdict,
 )
+from tests.eval.conftest import TWINS_QUERY, TWINS_TENANT
 from tests.eval.harness import OVERALL, SIGNALS, Metrics
 
 ABLATION_FLAG = "SYNAPTO_EVAL_ABLATION"
@@ -45,12 +45,10 @@ REPORT_PATH = harness.EVAL_DIR.parent.parent / "docs" / "eval" / "ablation.md"
 BY_NAME = {configuration.name: configuration for configuration in CONFIGURATIONS}
 FLAGS = ("hrr", "decay", "trust", "layer", "vector_leg", "keyword_leg")
 
-TENANT = "acme/ablation"
-CONTENT = "the deploy pipeline requires a signed tag before it publishes"
-QUERY = "signed tag before publish"
 RRF_K = 60
 SINGLE_LEG_RRF = 1 / (RRF_K + 1)
 DEFAULT_TRUST = 0.5
+CORE_OVER_EPHEMERAL = DEPTH_BOOST["core"] / DEPTH_BOOST["ephemeral"]
 
 
 class TestConfigurations:
@@ -127,37 +125,9 @@ class TestVariant:
             ablation.variant(BY_NAME["no-trust"], template="SELECT 1;")
 
 
-@pytest.fixture
-async def twins(pg, provider):
-    """Two identical memories, ``core`` then ``ephemeral``, so relevance is constant and only weight varies.
-
-    Both carry an HRR vector, as a memory stored through ``remember`` would,
-    so ``full`` really does add an HRR leg that ``no-hrr`` must remove.
-
-    Migrations run first because this module sorts before ``test_golden_set``
-    and may be the first thing to touch a fresh database.
-    """
-    await run_migrations(pg)
-    await pg.execute("DELETE FROM memories WHERE tenant = %s;", (TENANT,))
-    embedding = await provider.embed_one(CONTENT)
-    hrr_vector = phases_to_bytes(encode_fact(CONTENT, []))
-    ids = []
-    for layer in ("core", "ephemeral"):
-        row = await pg.execute_one(
-            """
-            INSERT INTO memories (content, embedding, embedding_dim, type, tenant, depth_layer, hrr_vector, hrr_dim)
-            VALUES (%s, %s, %s, 'general', %s, %s, %s, %s) RETURNING id;
-            """,
-            (CONTENT, embedding, provider.dimension, TENANT, layer, hrr_vector, DEFAULT_DIM),
-        )
-        ids.append(row["id"])
-    yield tuple(ids)
-    await pg.execute("DELETE FROM memories WHERE tenant = %s;", (TENANT,))
-
-
 async def _scores(pg, provider, configuration: Configuration) -> dict:
     with ablation.applied(configuration):
-        results = await hybrid_search(pg, provider, QUERY, tenant=TENANT, limit=10)
+        results = await hybrid_search(pg, provider, TWINS_QUERY, tenant=TWINS_TENANT, limit=10)
     return {result.id: result.rrf_score for result in results}
 
 
@@ -167,19 +137,18 @@ class TestSwitchingASignalOffReachesTheScore:
         assert set(await _scores(pg, provider, configuration)) == set(twins)
 
     async def test_no_hrr_leaves_the_bare_weighted_rrf(self, pg, provider, twins):
-        """Both legs rank the core twin first: ``2/(k+1) × 0.5 trust × 1.5 core``, and not an HRR leg more."""
+        """Both legs rank the core twin first: ``2/(k+1) × 0.5 trust × core weight``, and not an HRR leg more."""
         core, _ = twins
-        assert (await _scores(pg, provider, BY_NAME["no-hrr"]))[core] == pytest.approx(
-            2 * SINGLE_LEG_RRF * DEFAULT_TRUST * 1.5
-        )
-        assert (await _scores(pg, provider, FULL))[core] > 2 * SINGLE_LEG_RRF * DEFAULT_TRUST * 1.5
+        bare = 2 * SINGLE_LEG_RRF * DEFAULT_TRUST * DEPTH_BOOST["core"]
+        assert (await _scores(pg, provider, BY_NAME["no-hrr"]))[core] == pytest.approx(bare)
+        assert (await _scores(pg, provider, FULL))[core] > bare
 
     async def test_no_layer_makes_the_twins_tie(self, pg, provider, twins):
         core, ephemeral = twins
         scores = await _scores(pg, provider, BY_NAME["no-layer"])
         assert scores[core] == pytest.approx(scores[ephemeral])
         full = await _scores(pg, provider, FULL)
-        assert full[core] == pytest.approx(full[ephemeral] * 3)
+        assert full[core] == pytest.approx(full[ephemeral] * CORE_OVER_EPHEMERAL)
 
     async def test_rrf_only_reports_the_unweighted_sum(self, pg, provider, twins):
         core, ephemeral = twins
@@ -196,7 +165,7 @@ class TestSwitchingASignalOffReachesTheScore:
         await _scores(pg, provider, BY_NAME["rrf-only"])
         core, ephemeral = twins
         after = await _scores(pg, provider, FULL)
-        assert after[core] == pytest.approx(after[ephemeral] * 3)
+        assert after[core] == pytest.approx(after[ephemeral] * CORE_OVER_EPHEMERAL)
 
 
 class TestArithmetic:
