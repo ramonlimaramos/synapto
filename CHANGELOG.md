@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-06
+
 ### Added
 
 - `scripts/preflight_release.py` and the `release preflight` workflow: the release path is verified before a dispatch instead of on release day. The script parses `release.yml` and checks it against the hardened pipeline — `workflow_dispatch` only with no bump input, nothing pinned to a ref or version constant, the job graph `prepare → build → tag → publish → github_release` with the contract asserted before the build, `environment: release` on exactly `tag` and `publish`, the least-privilege permission table per job, and Trusted Publishing with no password — then, through an authenticated `gh` (skipped with a notice otherwise), that the `release` environment exists, has a required reviewer and lets the default branch deploy, and finally runs the version half of the release contract over the working tree. Each of the three 0.6.0/0.7.0 release-day failures (the back-merged `release/0.5` workflow, the in-CI `bump_type`, the deployment branch policy naming only a deleted branch) exits 1 with a message naming the setting and where to change it; the two historical workflow files are committed as test fixtures. The workflow runs on every pull request and push to `main` with the repository token, so a drift in the environment settings turns the next pull request red. `RELEASING.md` documents the procedure; PyYAML is declared in the `dev` extra (it was already resolved transitively) (#89)
