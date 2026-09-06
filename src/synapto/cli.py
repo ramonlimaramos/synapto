@@ -329,9 +329,9 @@ def _render_merge_plan(groups, counts) -> tuple[list, list]:
     """
     from synapto.tenants import AMBIGUOUS, EXACT
 
-    actionable = [g for g in groups if g.is_actionable and len(g.members) > 1]
-    held = [g for g in groups if not g.is_actionable and len(g.members) > 1]
-    singletons = [g for g in groups if len(g.members) == 1]
+    actionable = [g for g in groups if g.is_actionable]
+    held = [g for g in groups if g.canonical is None]
+    unchanged = [g for g in groups if g.canonical is not None and not g.moves]
 
     marker = {EXACT: "merge", AMBIGUOUS: "STOP "}
     for group in actionable + held:
@@ -342,9 +342,9 @@ def _render_merge_plan(groups, counts) -> tuple[list, list]:
             arrow = "  =" if member == group.canonical else "  ->"
             click.echo(f"  {arrow} {member}  ({counts[member]} memories)")
 
-    if singletons:
-        click.echo(f"\nunchanged ({len(singletons)} tenants with no sibling spelling):")
-        click.echo("  " + ", ".join(g.members[0] for g in singletons))
+    if unchanged:
+        click.echo(f"\nunchanged ({len(unchanged)} tenants already canonical with no sibling spelling):")
+        click.echo("  " + ", ".join(g.members[0] for g in unchanged))
 
     return actionable, held
 
@@ -363,9 +363,12 @@ def maintain(merge_tenants: bool, dry_run: bool) -> None:
     ``--merge-tenants`` reports how the stored tenants would collapse. It is a
     proposal, never a decision: groups whose canonical spelling is not
     determined by the data are printed and skipped rather than guessed at,
-    because applying the plan moves real memories between partitions.
+    because applying the plan moves real memories between partitions. Every
+    target is a canonical (lowercase) tenant; a legacy spelling with no
+    lowercase sibling is folded onto its own lowercase form.
 
-    ``--dry-run`` is the default. Applying requires saying so.
+    ``--dry-run`` is the default. Applying requires saying so, and applies the
+    printed plan as one transaction: either all of it lands or none of it.
     """
     if not merge_tenants:
         raise click.UsageError("select an operation — currently only --merge-tenants")
@@ -374,8 +377,8 @@ def maintain(merge_tenants: bool, dry_run: bool) -> None:
         from synapto.config import load_config
         from synapto.db.postgres import PostgresClient
         from synapto.repositories.memories import MemoryRepository
-        from synapto.repositories.tenants import TenantAliasRepository
-        from synapto.tenants import plan_tenant_merges
+        from synapto.repositories.tenants import TenantAliasError, TenantAliasRepository
+        from synapto.tenants import InvalidTenantError, plan_tenant_merges
 
         config = load_config()
         client = PostgresClient(config.pg_dsn)
@@ -401,17 +404,16 @@ def maintain(merge_tenants: bool, dry_run: bool) -> None:
                 click.echo("\nnothing can be merged without a decision.")
                 return
 
-            moves = sum(counts[m] for g in actionable for m in g.members if m != g.canonical)
+            plan = [(member, group.canonical) for group in actionable for member in group.moves]
+            moves = sum(counts[member] for member, _ in plan)
             if dry_run:
                 click.echo(f"\ndry run — nothing changed. --apply would move {moves} memories.")
                 return
 
-            aliases = TenantAliasRepository(client)
-            moved = 0
-            for group in actionable:
-                for member in group.members:
-                    if member != group.canonical:
-                        moved += await aliases.merge(member, group.canonical)
+            try:
+                moved = await TenantAliasRepository(client).merge_all(plan)
+            except (InvalidTenantError, TenantAliasError) as exc:
+                raise click.ClickException(f"nothing was applied — {exc}") from exc
             click.echo(f"\nmerged {moved} memories into {len(actionable)} canonical tenant(s)")
         finally:
             await client.close()

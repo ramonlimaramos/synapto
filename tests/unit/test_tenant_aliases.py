@@ -16,8 +16,9 @@ from synapto.tenants import InvalidTenantError
 CANONICAL = "acme/api"
 ALIAS = "api"
 OTHER = "acme/web"
+LEGACY = "Acme/API"
 
-TEST_TENANTS = (CANONICAL, ALIAS, OTHER, "acme/other", "legacy-api")
+TEST_TENANTS = (CANONICAL, ALIAS, OTHER, LEGACY, "acme/other", "legacy-api")
 
 
 @pytest.fixture
@@ -159,6 +160,79 @@ class TestMerge:
     async def test_merging_a_tenant_into_itself_is_refused(self, aliases):
         with pytest.raises(TenantAliasError, match="cannot be an alias of itself"):
             await aliases.merge(CANONICAL, CANONICAL)
+
+    async def test_the_target_must_be_canonical(self, aliases):
+        with pytest.raises(InvalidTenantError, match="canonical"):
+            await aliases.merge(ALIAS, LEGACY)
+
+    async def test_the_spelling_must_be_a_non_empty_string(self, aliases):
+        with pytest.raises(InvalidTenantError, match="spelling"):
+            await aliases.merge("", CANONICAL)
+
+
+class TestMergingALegacySpelling:
+    """A spelling the grammar rejects is what a merge exists to fold; it moves and leaves no alias."""
+
+    async def test_memories_move_out_of_the_legacy_spelling(self, pg, provider, aliases):
+        await _memory(pg, provider, LEGACY)
+        await _memory(pg, provider, CANONICAL)
+
+        moved = await aliases.merge(LEGACY, CANONICAL)
+
+        assert moved == 1
+        assert await _count(pg, LEGACY) == 0
+        assert await _count(pg, CANONICAL) == 2
+
+    async def test_no_alias_is_recorded_for_it(self, pg, provider, aliases):
+        await _memory(pg, provider, LEGACY)
+
+        await aliases.merge(LEGACY, CANONICAL)
+
+        assert await aliases.list_aliases() == []
+
+    async def test_a_canonical_spelling_still_gets_its_alias(self, pg, provider, aliases):
+        await _memory(pg, provider, ALIAS)
+
+        await aliases.merge(ALIAS, CANONICAL)
+
+        assert await aliases.resolve(ALIAS) == CANONICAL
+
+
+class TestMergeAllIsOneTransaction:
+    async def test_every_move_in_the_plan_lands_together(self, pg, provider, aliases):
+        await _memory(pg, provider, ALIAS)
+        await _memory(pg, provider, LEGACY)
+        await _memory(pg, provider, LEGACY)
+
+        moved = await aliases.merge_all([(ALIAS, CANONICAL), (LEGACY, CANONICAL)])
+
+        assert moved == 3
+        assert await _count(pg, CANONICAL) == 3
+        assert [row["alias"] for row in await aliases.list_aliases()] == [ALIAS]
+
+    async def test_a_refusal_on_the_last_move_undoes_the_first(self, pg, provider, aliases):
+        await aliases.register(OTHER, "acme/other")
+        await _memory(pg, provider, ALIAS)
+        await _memory(pg, provider, "legacy-api")
+
+        with pytest.raises(TenantAliasError, match="is itself an alias"):
+            await aliases.merge_all([(ALIAS, CANONICAL), ("legacy-api", OTHER)])
+
+        assert await _count(pg, ALIAS) == 1
+        assert await _count(pg, CANONICAL) == 0
+        assert await aliases.resolve(ALIAS) == ALIAS
+
+    async def test_a_malformed_plan_fails_before_any_move(self, pg, provider, aliases):
+        await _memory(pg, provider, ALIAS)
+
+        with pytest.raises(InvalidTenantError):
+            await aliases.merge_all([(ALIAS, CANONICAL), (ALIAS, LEGACY)])
+
+        assert await _count(pg, ALIAS) == 1
+        assert await aliases.list_aliases() == []
+
+    async def test_an_empty_plan_moves_nothing(self, aliases):
+        assert await aliases.merge_all([]) == 0
 
 
 class TestListing:
