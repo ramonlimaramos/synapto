@@ -1,0 +1,45 @@
+name: release preflight
+
+# Verifies the release path without publishing anything: the shape of
+# release.yml, the GitHub-side `release` environment, and the version half of
+# the release contract. See scripts/preflight_release.py and RELEASING.md.
+#
+# Runs on every pull request and every push to main rather than only on
+# changes under .github/**: the environment settings live outside the
+# repository, so a path filter would never notice them drifting. The job costs
+# seconds and needs no project dependency beyond PyYAML.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: set up python
+        run: uv python install 3.13
+
+      - name: install dev tools
+        run: uv sync --extra dev --python 3.13
+        env:
+          UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+      # github.token can read a public repository's environments, so the
+      # environment check runs here instead of being skipped as unauthenticated.
+      - name: preflight the release path
+        run: uv run python scripts/preflight_release.py
+        env:
+          GH_TOKEN: ${{ github.token }}

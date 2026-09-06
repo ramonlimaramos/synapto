@@ -145,7 +145,7 @@ chore(synapto): bump dependency versions
 
 ## Releases
 
-Releases are published to PyPI and are **admin-only**. They are triggered manually via the GitHub Actions release workflow (`workflow_dispatch`). Contributors do not need to worry about versioning or publishing — maintainers handle this.
+Releases are published to PyPI and are **admin-only**. They are triggered manually via the GitHub Actions release workflow (`workflow_dispatch`). Contributors do not need to worry about versioning or publishing — maintainers handle this, following [RELEASING.md](RELEASING.md): land the version through a pull request, run `uv run python scripts/preflight_release.py`, then dispatch.
 
 ## Questions?
 
