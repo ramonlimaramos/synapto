@@ -14,9 +14,11 @@ explicit two-step operation rather than an accidental one.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from synapto.db.postgres import PostgresClient
 from synapto.sql import tenants as sql
-from synapto.tenants import validate_tenant
+from synapto.tenants import InvalidTenantError, is_canonical_tenant, validate_tenant
 
 
 class TenantAliasError(RuntimeError):
@@ -89,26 +91,59 @@ class TenantAliasRepository:
         """Every recorded mapping, ordered by canonical then alias."""
         return await self._db.execute(sql.LIST)
 
-    async def merge(self, alias: str, canonical: str) -> int:
-        """Move every memory from ``alias`` to ``canonical`` and record the alias.
+    async def merge(self, spelling: str, canonical: str) -> int:
+        """Fold one stored tenant spelling into ``canonical``; see :meth:`merge_all`."""
+        return await self.merge_all([(spelling, canonical)])
 
-        The move and the alias registration share one transaction: a partial
-        apply would leave memories under a tenant with no alias pointing away
-        from it, which is exactly the silent unreachability this whole change
-        exists to remove.
+    async def merge_all(self, plan: Sequence[tuple[str, str]]) -> int:
+        """Apply every ``(spelling, canonical)`` move in ``plan`` as one transaction.
+
+        ``canonical`` must be canonical. ``spelling`` is whatever the store
+        holds, canonical or not: a legacy tenant written before the grammar
+        existed (``Acme/API``) is exactly what a merge is for, and refusing to
+        fold it would leave it unreachable forever, since every tool rejects
+        that spelling at the boundary. The alias row is recorded only when the
+        spelling is itself canonical. A non-canonical spelling can never be
+        looked up — the boundary rejects it and names the lowercase form before
+        any alias is consulted — so a row for it would be dead, and the table's
+        grammar check refuses it anyway.
+
+        One transaction for the whole plan, not one per move: a plan is what a
+        human approved as a unit, and a refusal on the third group after the
+        first two moved would leave the store in a state nobody approved. Every
+        argument is validated before the transaction opens, so a malformed
+        plan fails without touching the database.
 
         Returns:
             The number of memories moved.
-        """
-        validate_tenant(alias, source="alias")
-        validate_tenant(canonical, source="canonical")
-        if alias == canonical:
-            raise TenantAliasError(f"tenant {alias!r} cannot be an alias of itself")
 
+        Raises:
+            InvalidTenantError: a canonical is not canonical, or a spelling is
+                not a non-empty string.
+            TenantAliasError: a move would create a chain or fold a tenant
+                into itself.
+        """
+        for spelling, canonical in plan:
+            _validate_move(spelling, canonical)
+
+        moved = 0
         async with self._db.acquire() as conn:
             await conn.execute(sql.LOCK_TABLE)
-            await self._reject_chain(conn, alias, canonical)
-            cursor = await conn.execute(sql.MOVE_MEMORIES, {"alias": alias, "canonical": canonical})
-            moved = cursor.rowcount
-            await conn.execute(sql.INSERT, (alias, canonical))
+            for spelling, canonical in plan:
+                moved += await self._move(conn, spelling, canonical)
         return moved
+
+    async def _move(self, conn, spelling: str, canonical: str) -> int:
+        await self._reject_chain(conn, spelling, canonical)
+        cursor = await conn.execute(sql.MOVE_MEMORIES, {"alias": spelling, "canonical": canonical})
+        if is_canonical_tenant(spelling):
+            await conn.execute(sql.INSERT, (spelling, canonical))
+        return cursor.rowcount
+
+
+def _validate_move(spelling: object, canonical: str) -> None:
+    if not isinstance(spelling, str) or not spelling:
+        raise InvalidTenantError(f"spelling must be a non-empty string, got {spelling!r}")
+    validate_tenant(canonical, source="canonical")
+    if spelling == canonical:
+        raise TenantAliasError(f"tenant {spelling!r} cannot be an alias of itself")

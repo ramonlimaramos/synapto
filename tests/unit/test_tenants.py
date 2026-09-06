@@ -319,6 +319,64 @@ class TestMergePlanning:
         assert plan_tenant_merges({}) == []
 
 
+class TestEveryTargetIsLowercase:
+    """The standard is the canonical grammar; the planner never proposes a target outside it."""
+
+    def _group_for(self, groups, member):
+        return next(g for g in groups if member in g.members)
+
+    def test_the_busiest_spelling_wins_only_if_it_is_canonical(self):
+        groups = plan_tenant_merges({"Acme/API": 40, "acme/api": 4})
+        group = self._group_for(groups, "acme/api")
+
+        assert group.confidence == EXACT
+        assert group.canonical == "acme/api"
+        assert group.moves == ("Acme/API",)
+
+    def test_a_group_with_no_canonical_member_folds_to_lowercase(self):
+        groups = plan_tenant_merges({"Acme/API": 3, "ACME/api": 1})
+        group = self._group_for(groups, "Acme/API")
+
+        assert group.canonical == "acme/api"
+        assert group.reason == "identical once case and '_' are normalized; folded to lowercase"
+        assert group.moves == ("Acme/API", "ACME/api")
+
+    def test_a_lone_legacy_spelling_is_actionable(self):
+        group = plan_tenant_merges({"Acme/API": 3})[0]
+
+        assert group.canonical == "acme/api"
+        assert group.confidence == EXACT
+        assert group.reason == "only spelling in the store; folded to lowercase"
+        assert group.is_actionable
+
+    def test_a_lone_canonical_spelling_is_not(self):
+        group = plan_tenant_merges({"acme/api": 3})[0]
+
+        assert group.canonical == "acme/api"
+        assert group.moves == ()
+        assert not group.is_actionable
+
+    def test_owners_are_compared_folded(self):
+        groups = plan_tenant_merges({"acme/api": 2, "Acme/api": 1, "api": 1})
+        group = self._group_for(groups, "api")
+
+        assert group.confidence == REVIEW
+        assert group.canonical == "acme/api"
+        assert set(group.moves) == {"Acme/api", "api"}
+
+    def test_an_owner_underscore_is_folded_to_a_hyphen(self):
+        groups = plan_tenant_merges({"acme_corp/api": 2})
+
+        assert groups[0].canonical == "acme-corp/api"
+
+    def test_a_fold_that_is_still_not_canonical_is_held(self):
+        group = plan_tenant_merges({"acme./api": 2})[0]
+
+        assert group.canonical is None
+        assert group.confidence == AMBIGUOUS
+        assert group.reason == "no lowercase spelling to adopt: 'acme./api' is not canonical either"
+
+
 class TestPlanningTheRealStore:
     """A characterization test over the distribution that motivated the issue.
 

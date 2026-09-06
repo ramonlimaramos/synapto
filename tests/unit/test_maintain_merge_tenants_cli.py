@@ -16,15 +16,16 @@ can fold into them.
 The command's ``asyncio.run`` cannot start inside the test's running loop, so
 ``CliRunner.invoke`` is dispatched to a worker thread.
 
-What the first apply test found: the planner's highest-confidence group,
-spellings "identical once case and '_' are normalized", cannot be applied when
-the difference is case or an underscore in the owner segment. Those spellings
-are non-canonical by definition, and ``TenantAliasRepository.merge`` validates
-the alias as canonical before moving anything, so the command dies with an
-``InvalidTenantError`` traceback after the plan is printed — and after any
-earlier group in the same run has already been merged. ``TestKnownGap`` pins
-that as a strict expected failure so the fix flips it rather than silently
-landing.
+What the first apply test found, and what this module now pins the fix for:
+a spelling that differs only by case or by an underscore in the owner segment
+is non-canonical by definition, and ``merge`` used to validate it as canonical
+before moving anything, so the command died with a traceback after the plan
+was printed — and after any earlier group in the same run had already been
+merged. The standard is that every tenant is lowercase: such a spelling now
+folds into its lowercase form without recording an alias (the boundary rejects
+that spelling and names the lowercase form before any alias is consulted), a
+lone legacy spelling folds onto itself lowercased, and the whole plan is one
+transaction, so a refused group undoes the ones applied before it.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from synapto.cli import main
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.tenants import TenantAliasRepository
 from synapto.scopes import ScopeRef, ScopeSet
-from synapto.tenants import InvalidTenantError
+from synapto.tenants import InvalidTenantError, resolve_tenant
 from tests.db_guard import resolve_test_dsn
 
 CANONICAL = "acme-mergecli/svc-api"
@@ -47,10 +48,24 @@ NAME_VARIANT = "acme-mergecli/svc_api"
 CASE_VARIANT = "ACME-MergeCLI/svc-api"
 UNQUALIFIED = "svc-api"
 ONE_OWNER = "acme-mergecli/dup"
+ONE_OWNER_CASED = "acme-mergecli/DUP"
 OTHER_OWNER = "beta-mergecli/dup"
 CONTROL = "acme-mergecli/control"
+LONE_LEGACY = "ACME-MergeCLI/lone"
+LONE_FOLDED = "acme-mergecli/lone"
 
-TEST_TENANTS = (CANONICAL, NAME_VARIANT, CASE_VARIANT, UNQUALIFIED, ONE_OWNER, OTHER_OWNER, CONTROL)
+TEST_TENANTS = (
+    CANONICAL,
+    NAME_VARIANT,
+    CASE_VARIANT,
+    UNQUALIFIED,
+    ONE_OWNER,
+    ONE_OWNER_CASED,
+    OTHER_OWNER,
+    CONTROL,
+    LONE_LEGACY,
+    LONE_FOLDED,
+)
 SCOPES = ScopeSet.parse([ScopeRef("language", "python")])
 
 
@@ -281,36 +296,93 @@ class TestApplyLeavesTheRestOfTheStoreAlone:
         assert sum((await store.counts()).values()) == before
 
 
-class TestKnownGap:
-    """A case variant is planned as an exact merge and then refused by the alias validation."""
+class TestLegacySpellingsFoldToLowercase:
+    """The standard is lowercase; a spelling written before the grammar existed is folded onto it."""
 
-    async def test_the_plan_proposes_the_case_variant(self, store):
+    async def test_a_case_variant_is_planned_and_applied(self, store):
+        await store.memories(CANONICAL, 2)
+        folded = await store.memory(CASE_VARIANT)
+
+        result = await _invoke("--apply")
+
+        assert result.exit_code == 0, result.output
+        assert "[merge] -> acme-mergecli/svc-api" in result.output
+        assert "merged 1 memories into 1 canonical tenant(s)" in result.output
+        assert await store.tenant_of(folded) == CANONICAL
+        assert await store.count(CASE_VARIANT) == 0
+
+    async def test_no_alias_is_recorded_for_a_spelling_the_boundary_rejects(self, store):
+        """An alias row for ``ACME-MergeCLI/svc-api`` would never be read: the spelling is refused first."""
         await store.memories(CANONICAL, 2)
         await store.memory(CASE_VARIANT)
 
+        await _invoke("--apply")
+
+        assert await store.aliases() == {}
+        with pytest.raises(InvalidTenantError, match="did you mean 'acme-mergecli/svc-api'"):
+            resolve_tenant(CASE_VARIANT)
+
+    async def test_a_lone_legacy_spelling_folds_onto_its_own_lowercase_form(self, store):
+        lone = await store.memory(LONE_LEGACY)
+
+        result = await _invoke("--apply")
+
+        assert result.exit_code == 0, result.output
+        assert f"[merge] -> {LONE_FOLDED}   (only spelling in the store; folded to lowercase)" in result.output
+        assert await store.tenant_of(lone) == LONE_FOLDED
+        assert await store.aliases() == {}
+
+    async def test_a_lone_canonical_spelling_is_unchanged(self, store):
+        await store.memory(CONTROL)
+
+        result = await _invoke("--apply")
+
+        assert CONTROL in result.output.split("unchanged")[1]
+        assert await store.count(CONTROL) == 1
+
+    async def test_a_cased_owner_is_the_same_owner(self, store):
+        """``ACME-MergeCLI`` and ``acme-mergecli`` are one owner, so the unqualified spelling can follow."""
+        await store.memories(CANONICAL, 2)
+        cased = await store.memory(CASE_VARIANT)
+        bare = await store.memory(UNQUALIFIED)
+
+        result = await _invoke("--apply")
+
+        assert result.exit_code == 0, result.output
+        assert "[check] -> acme-mergecli/svc-api" in result.output
+        assert await store.tenant_of(cased) == CANONICAL
+        assert await store.tenant_of(bare) == CANONICAL
+        assert await store.aliases() == {UNQUALIFIED: CANONICAL}
+
+
+class TestThePlanIsOneTransaction:
+    """A group refused midway undoes every group applied before it."""
+
+    async def _plan_whose_second_group_is_refused(self, store):
+        """Group one folds ``DUP`` into ``dup``; group two targets a tenant that is already an alias."""
+        await store.memories(ONE_OWNER, 3)
+        cased = await store.memory(ONE_OWNER_CASED)
+        await store.memories(CANONICAL, 2)
+        variant = await store.memory(NAME_VARIANT)
+        await TenantAliasRepository(store.pg).register(CANONICAL, CONTROL)
+        return cased, variant
+
+    async def test_the_first_group_is_planned_before_the_refused_one(self, store):
+        await self._plan_whose_second_group_is_refused(store)
+
         result = await _invoke()
 
-        assert "[merge] -> acme-mergecli/svc-api" in result.output
-        assert "--apply would move 1 memories" in result.output
+        assert result.output.index(f"[merge] -> {ONE_OWNER}") < result.output.index(f"[merge] -> {CANONICAL}")
 
-    @pytest.mark.xfail(strict=True, raises=InvalidTenantError, reason="merge validates the alias as canonical")
-    async def test_applying_it_moves_the_memories(self, store):
-        await store.memories(CANONICAL, 2)
-        folded = await store.memory(CASE_VARIANT)
+    async def test_a_refused_group_rolls_back_the_ones_before_it(self, store):
+        cased, variant = await self._plan_whose_second_group_is_refused(store)
 
         result = await _invoke("--apply")
 
-        if result.exception:
-            raise result.exception
-        assert await store.tenant_of(folded) == CANONICAL
-
-    async def test_the_refused_group_is_left_exactly_as_it_was(self, store):
-        await store.memories(CANONICAL, 2)
-        folded = await store.memory(CASE_VARIANT)
-
-        result = await _invoke("--apply")
-
-        assert result.exit_code != 0
-        assert await store.tenant_of(folded) == CASE_VARIANT
-        assert await store.count(CANONICAL) == 2
-        assert await store.aliases() == {}
+        assert result.exit_code == 1
+        assert "nothing was applied — 'acme-mergecli/svc-api' is itself an alias of" in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert await store.tenant_of(cased) == ONE_OWNER_CASED
+        assert await store.tenant_of(variant) == NAME_VARIANT
+        assert await store.count(ONE_OWNER) == 3
+        assert await store.aliases() == {CANONICAL: CONTROL}

@@ -188,7 +188,7 @@ synapto maintain --merge-tenants --dry-run   # report the proposed mapping
 synapto maintain --merge-tenants --apply     # move the memories, record the aliases
 ```
 
-Each fold is recorded in `tenant_aliases` (one hop, never a chain), so the merge is auditable. Reads do not yet follow aliases: a client that still sends an old spelling gets an empty, honest partition rather than a silent redirect.
+Every target is a canonical, lowercase tenant. A fold from a canonical spelling (`api` → `acme/api`) is recorded in `tenant_aliases` (one hop, never a chain), and every tool follows that alias on reads and writes, so the old spelling keeps working. A legacy spelling the grammar rejects (`Acme/API`) is folded onto its lowercase form and records no alias — step 1 already refuses it and names the lowercase form — and a store holding only `Acme/API` is offered `acme/api` rather than left unreachable. `--apply` runs the printed plan as one transaction: a group refused midway undoes the ones before it.
 
 ### Scopes are typed
 

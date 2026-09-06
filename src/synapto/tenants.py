@@ -271,6 +271,13 @@ class TenantGroup:
     That is not a failure of the planner: two owners claiming the same project
     name is a question only a human can answer, and inventing an answer is how
     a cleanup silently loses memories.
+
+    When it is set, ``canonical`` is always a canonical tenant, even when no
+    member spells it that way: a store that holds only ``Acme/API`` is proposed
+    to fold into ``acme/api``. Memories under a non-canonical spelling are
+    unreachable — every tool rejects that spelling at the boundary — so the
+    lone legacy tenant is a move worth making, not a singleton to report as
+    unchanged. ``moves`` names exactly the spellings that would change.
     """
 
     canonical: str | None
@@ -279,8 +286,13 @@ class TenantGroup:
     reason: str
 
     @property
+    def moves(self) -> tuple[str, ...]:
+        """The members that would be re-tenanted: every spelling but the canonical one."""
+        return tuple(m for m in self.members if m != self.canonical) if self.canonical else ()
+
+    @property
     def is_actionable(self) -> bool:
-        return self.canonical is not None and len(self.members) > 1
+        return bool(self.moves)
 
 
 def _fold(tenant: str) -> str:
@@ -344,24 +356,61 @@ def plan_tenant_merges(counts: Mapping[str, int]) -> list[TenantGroup]:
 
 
 def _classify(members: list[str], counts: Mapping[str, int]) -> TenantGroup:
-    ordered = tuple(sorted(members, key=lambda t: (-counts[t], t)))
-    if len(ordered) == 1:
-        return TenantGroup(ordered[0], ordered, EXACT, "only spelling in the store")
+    """Decide what a bucket of spellings collapses to, or that it cannot be decided.
 
+    Owners are compared folded: ``Acme/api`` and ``acme/api`` are one owner
+    with two spellings, not a dispute between two owners. The confidence
+    ladder is unchanged by that — fold-equal members are ``exact``, a single
+    owner with unqualified company is ``review``, two owners are
+    ``ambiguous`` — but the target is chosen by :func:`_standard_spelling`,
+    so a group never proposes a canonical the store would reject.
+    """
+    ordered = tuple(sorted(members, key=lambda t: (-counts[t], t)))
     folded = {_fold(t) for t in ordered}
     qualified = [t for t in ordered if "/" in t]
-    owners = {_owner_of(t) for t in qualified}
+    owners = {_owner_of(_fold(t)) for t in qualified}
+
+    if len(ordered) == 1:
+        return _adopt(ordered, ordered, EXACT, "only spelling in the store")
 
     if len(folded) == 1:
-        return TenantGroup(ordered[0], ordered, EXACT, "identical once case and '_' are normalized")
+        return _adopt(ordered, ordered, EXACT, "identical once case and '_' are normalized")
 
     if len(owners) > 1:
         return TenantGroup(None, ordered, AMBIGUOUS, f"{len(owners)} owners claim this name: {_render(sorted(owners))}")
 
-    if len(qualified) == 1:
-        return TenantGroup(qualified[0], ordered, REVIEW, "one 'owner/name' spelling, the rest unqualified")
+    if qualified:
+        return _adopt(ordered, qualified, REVIEW, "one owner spells this name; the unqualified spellings follow it")
 
     return TenantGroup(None, ordered, AMBIGUOUS, "no 'owner/name' spelling to adopt as canonical")
+
+
+def _adopt(ordered: tuple[str, ...], candidates: Sequence[str], confidence: str, reason: str) -> TenantGroup:
+    """Build the group around the standard spelling of ``candidates``, or hold it when there is none."""
+    canonical = _standard_spelling(candidates)
+    if canonical is None:
+        reason = f"no lowercase spelling to adopt: {_fold(candidates[0])!r} is not canonical either"
+        return TenantGroup(None, ordered, AMBIGUOUS, reason)
+    if canonical not in ordered:
+        reason = f"{reason}; folded to lowercase"
+    return TenantGroup(canonical, ordered, confidence, reason)
+
+
+def _standard_spelling(candidates: Sequence[str]) -> str | None:
+    """The spelling a fold-equal set collapses to.
+
+    The busiest member that is already canonical wins, so a store that has
+    mostly settled on one spelling keeps it. When no member is canonical —
+    every spelling carries uppercase, or an underscore in the owner — the
+    target is the lowercase fold itself, which is what the boundary would
+    have told the writer to use. A fold that is still not canonical (a stray
+    dot in the owner, say) yields ``None``: that is a human's call.
+    """
+    for tenant in candidates:
+        if is_canonical_tenant(tenant):
+            return tenant
+    folded = _fold(candidates[0])
+    return folded if is_canonical_tenant(folded) else None
 
 
 def _render(values: Sequence[str | None]) -> str:
