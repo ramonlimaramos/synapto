@@ -133,7 +133,11 @@ async def twins(pg, provider):
 
     Both carry an HRR vector, as a memory stored through ``remember`` would,
     so ``full`` really does add a boost that ``no-hrr`` must remove.
+
+    Migrations run first because this module sorts before ``test_golden_set``
+    and may be the first thing to touch a fresh database.
     """
+    await run_migrations(pg)
     await pg.execute("DELETE FROM memories WHERE tenant = %s;", (TENANT,))
     embedding = await provider.embed_one(CONTENT)
     hrr_vector = phases_to_bytes(encode_fact(CONTENT, []))
