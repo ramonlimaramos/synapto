@@ -82,6 +82,7 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "build>=1.0",
+    "pyyaml>=6.0",
     # pinned to fix GHSA-6v7p-g79w-8964, pulled transitively by pip-audit[filecache].
     "msgpack>=1.2.1",
     # pinned to fix CVE-2026-3219/PYSEC-2026-196 in pip itself; uv bundles older
