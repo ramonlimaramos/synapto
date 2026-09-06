@@ -1,6 +1,6 @@
 """Ranking-signal ablation — does each signal earn its complexity?
 
-The ranker fuses six things: a vector leg, a keyword leg, an HRR boost, and
+The ranker fuses six things: a vector leg, a keyword leg, an HRR leg, and
 three quality multipliers (decay, trust, layer weight). Each was added with an
 argument and none with a measurement. This module switches them off one at a
 time and reruns the golden set, so the question "what does this signal buy"
@@ -9,7 +9,7 @@ gets a number instead of an opinion. It is measurement only: nothing in
 
 **How a signal is switched off.** Every configuration is a variant of the
 production ``RRF_QUERY_TEMPLATE`` plus, for HRR, a stand-in for
-``_compute_hrr_boost`` that returns zero. The variants come from exact
+``_hrr_leg`` that contributes zero to every candidate. The variants come from exact
 replacement of fragments quoted verbatim from the template — the quality-weight
 product, and each leg's predicate — and :func:`variant` refuses to run when a
 fragment is not found exactly where expected, so a change to the production
@@ -18,12 +18,14 @@ name. The seeded corpus is identical across configurations; only the ranking
 function changes, which is what makes the deltas attributable.
 
 **Two blocks.** The primary block removes one signal from ``full``, as issue
-#94 asked. The conditional block removes the HRR boost first and then one more
-signal, because the boost's floor (+0.075 at zero similarity, against a
-maximum RRF sum of ~0.033) flattens relevance so far that under ``full`` every
-multiplicative weight decides more than it should, and removing one looks like
-an improvement. The conditional block answers the question the HRR follow-up
-will face: once the boost is gone, does each remaining signal earn its place?
+#94 asked. The conditional block removes the HRR leg first and then one more
+signal. It was added when the leg was a boost whose floor (+0.075 at zero
+similarity, against a maximum RRF sum of ~0.033) flattened relevance so far
+that under ``full`` every multiplicative weight decided more than it should,
+and removing one looked like an improvement; #103 replaced the boost, and the
+block stays because it still answers a live question — which signals stand on
+their own when the HRR leg contributes nothing, as it does for memories stored
+without a vector.
 
 **Noise floor.** Insertion order reaches the ranking only through
 ``created_at``, which breaks ties at every ``ORDER BY … LIMIT``. Reseeding the
@@ -171,17 +173,17 @@ def _swap(statement: str, fragment: str, replacement: str, *, expected: int) -> 
     return statement.replace(fragment, replacement)
 
 
-def _no_boost(query: str, hrr_vector: bytes | None, hrr_weight: float = 0.15) -> float:
-    return 0.0
+def _no_hrr_leg(rows: Sequence[Mapping[str, object]], query: str, rrf_k: int) -> list[float]:
+    return [0.0] * len(rows)
 
 
 @contextmanager
 def applied(configuration: Configuration) -> Iterator[None]:
     """Run ``hybrid_search`` under the configuration for the duration of the block."""
-    boost = hybrid._compute_hrr_boost if configuration.hrr else _no_boost
+    hrr_leg = hybrid._hrr_leg if configuration.hrr else _no_hrr_leg
     with (
         patch.object(sql, "RRF_QUERY_TEMPLATE", variant(configuration)),
-        patch.object(hybrid, "_compute_hrr_boost", boost),
+        patch.object(hybrid, "_hrr_leg", hrr_leg),
     ):
         yield
 

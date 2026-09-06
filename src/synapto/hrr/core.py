@@ -97,6 +97,21 @@ def similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(np.cos(a - b)))
 
 
+NOISE_FLOOR_SIGMAS = 3.0
+
+
+def similarity_noise_floor(dim: int, sigmas: float = NOISE_FLOOR_SIGMAS) -> float:
+    """Largest similarity two unrelated vectors reach by chance, at ``sigmas`` standard deviations.
+
+    For independent uniform phases each ``cos(a - b)`` has mean 0 and variance
+    1/2, so the mean over ``dim`` components has standard deviation
+    ``sqrt(1 / (2 * dim))`` — 0.022 at the default 1024. A similarity below the
+    floor says nothing; the caller should treat the pair as unrelated rather
+    than as faintly related. O(1).
+    """
+    return sigmas * math.sqrt(1.0 / (2.0 * dim))
+
+
 def encode_text(text: str, dim: int = DEFAULT_DIM) -> np.ndarray:
     """Bag-of-words encoding: bundle of atom vectors for each token.
 

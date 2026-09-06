@@ -42,10 +42,15 @@ unbind(fact, bind("kafka", ROLE_ENTITY)) ≈ content_signal
 The `recall` tool now uses RRF across three signals:
 
 ```
-final_score = (1/(k+semantic_rank) + 1/(k+keyword_rank) + hrr_boost) × decay × trust × depth_boost
+final_score = (1/(k+semantic_rank) + 1/(k+keyword_rank) + hrr_leg) × decay × trust × depth_boost
+
+hrr_leg = evidence / (k + 1)
+evidence = max(similarity − noise_floor, 0) / (1 − noise_floor)      # in [0, 1]
 ```
 
-If a memory has no HRR vector (pre-existing data), search gracefully falls back to 2-way RRF.
+The query is encoded exactly as `remember` encodes the memory — `encode_fact` of the text with its extracted entities — and compared with the stored vector. A memory below the noise floor (`3 / sqrt(2·dim)`, ≈0.066 at 1024) gains nothing; an identical one gains what the first-ranked row of a SQL leg gains, `1/(k+1)`, never more. A memory with no HRR vector (pre-existing data) is simply outside the leg, so search falls back to 2-way RRF for it.
+
+Until 0.8.0 the leg was `((similarity + 1) / 2) × 0.15` against an unbound probe: +0.075 for an unrelated memory, more than both SQL legs together could add, decided by noise. Issue #103 and `docs/eval/ablation.md` carry the measurement.
 
 ## MCP Tools
 
