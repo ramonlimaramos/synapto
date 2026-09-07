@@ -63,7 +63,7 @@ class TestFilterValidation:
             validate_metadata_filter({"failure_class": "x", "tags": {"y": 1}})
 
     def test_a_list_of_scalars_is_accepted(self):
-        payload = {"products": ["jerry", "reasoning-inbox"], "counts": [1, 2], "flags": [True, None]}
+        payload = {"products": ["assistant", "inbox"], "counts": [1, 2], "flags": [True, None]}
 
         assert validate_metadata_filter(payload) == payload
 
@@ -202,28 +202,28 @@ class TestContainmentSemantics:
 
 
 class TestListContainment:
-    """A list value means the stored list contains every element; a scalar never matches a list."""
+    """A list value means the stored list contains every element; a scalar never matches a list, nor a list a scalar."""
 
     async def _seed(self, store, provider):
         embedding = (await provider.embed(["finding"]))[0]
-        await _insert(store, embedding, provider.dimension, "inbox in hermes",
-                      {"products": ["jerry", "reasoning-inbox"], "language": "elixir"})
-        await _insert(store, embedding, provider.dimension, "jerry only",
-                      {"products": ["jerry"], "language": "python"})
+        await _insert(store, embedding, provider.dimension, "inbox in acme/mailer",
+                      {"products": ["assistant", "inbox"], "language": "elixir"})
+        await _insert(store, embedding, provider.dimension, "assistant only",
+                      {"products": ["assistant"], "language": "python"})
         await _insert(store, embedding, provider.dimension, "scalar product",
-                      {"products": "reasoning-inbox"})
+                      {"products": "inbox"})
 
     async def test_a_list_matches_a_stored_superset(self, store, provider):
         await self._seed(store, provider)
 
-        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["reasoning-inbox"]}) == 1
-        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["jerry"]}) == 2
+        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["inbox"]}) == 1
+        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["assistant"]}) == 2
 
     async def test_every_listed_element_must_be_present(self, store, provider):
         await self._seed(store, provider)
 
         both = await count_memories(
-            store, tenant=TENANT, metadata_filter={"products": ["jerry", "reasoning-inbox"]}
+            store, tenant=TENANT, metadata_filter={"products": ["assistant", "inbox"]}
         )
         disjoint = await count_memories(store, tenant=TENANT, metadata_filter={"products": ["billing"]})
 
@@ -235,20 +235,30 @@ class TestListContainment:
         await self._seed(store, provider)
 
         results = await hybrid_search(
-            store, provider, "finding", tenant=TENANT, limit=50, metadata_filter={"products": "reasoning-inbox"}
+            store, provider, "finding", tenant=TENANT, limit=50, metadata_filter={"products": "inbox"}
         )
 
         assert [r.content for r in results] == ["scalar product"]
+
+    async def test_a_list_filter_does_not_match_a_stored_scalar(self, store, provider):
+        """The converse holds too: containment needs a stored array, a scalar with the same text is not one."""
+        await self._seed(store, provider)
+
+        results = await hybrid_search(
+            store, provider, "finding", tenant=TENANT, limit=50, metadata_filter={"products": ["inbox"]}
+        )
+
+        assert [r.content for r in results] == ["inbox in acme/mailer"]
 
     async def test_a_list_composes_with_a_scalar_facet(self, store, provider):
         await self._seed(store, provider)
 
         results = await hybrid_search(
             store, provider, "finding", tenant=TENANT, limit=50,
-            metadata_filter={"products": ["jerry"], "language": "elixir"},
+            metadata_filter={"products": ["assistant"], "language": "elixir"},
         )
 
-        assert [r.content for r in results] == ["inbox in hermes"]
+        assert [r.content for r in results] == ["inbox in acme/mailer"]
 
 
 class TestTheIndexIsUsed:
@@ -277,7 +287,7 @@ class TestTheIndexIsUsed:
             await conn.execute("SET LOCAL enable_seqscan = off;")
             cursor = await conn.execute(
                 "EXPLAIN SELECT id FROM memories WHERE metadata @> %s::jsonb;",
-                (Jsonb({"products": ["reasoning-inbox"]}),),
+                (Jsonb({"products": ["inbox"]}),),
             )
             rows = await cursor.fetchall()
 
@@ -370,9 +380,9 @@ class TestRecallExposesBoth:
     async def test_a_list_facet_is_reachable_through_the_tool(self, wired, provider):
         embedding = (await provider.embed(["finding"]))[0]
         await _insert(wired, embedding, provider.dimension, "faceted finding",
-                      {"products": ["jerry", "reasoning-inbox"]})
+                      {"products": ["assistant", "inbox"]})
 
-        found = await server.recall("finding", tenant=TENANT, metadata_filter={"products": ["reasoning-inbox"]})
+        found = await server.recall("finding", tenant=TENANT, metadata_filter={"products": ["inbox"]})
 
         assert "faceted finding" in found
         assert "Recalled 1 memories of 1 matching the filters" in found

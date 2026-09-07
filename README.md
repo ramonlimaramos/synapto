@@ -69,7 +69,7 @@ synapto search "hello world"
 
 **Search** — Ask a question, get the best memory. Behind the scenes, three signals (vector similarity, full-text, and compositional algebra) are fused into one score. You just call `recall`.
 
-**Scopes** — A memory can declare where it applies: `repo:acme/api`, `language:python`, `skill:code-review`, `global:all`. `recall(scopes=[...])` returns only what applies to the context you are in, and a `metadata_filter` narrows further ("every finding with `failure_class = missing_docstring`", or every memory whose `products` list contains `reasoning-inbox`, with a true total, not a page size). Scopes gate, metadata describes: a scope is a condition the reader must name, a metadata facet is a fact about the memory that never hides it from an unrelated query.
+**Scopes** — A memory can declare where it applies: `repo:acme/api`, `language:python`, `skill:code-review`, `global:all`. `recall(scopes=[...])` returns only what applies to the context you are in, and a `metadata_filter` narrows further ("every finding with `failure_class = missing_docstring`", or every memory whose `products` list contains `inbox`, with a true total, not a page size). Scopes gate, metadata describes: a scope is a condition the reader must name, a metadata facet is a fact about the memory that never hides it from an unrelated query.
 
 **Provenance** — Every memory records who wrote it: `human`, `agent`, or `consolidation`. Recall can filter by origin, and `forget` refuses to delete a human-authored memory unless told explicitly.
 
@@ -242,7 +242,7 @@ get actionable errors instead of raw Postgres exceptions.
 | `tenant` | Canonical `owner/name`, max 100 characters |
 | `scopes` | Up to 20 unique `"<type>:<key>"` entries per memory or query |
 | `origin` | One of `human`, `agent`, `consolidation` |
-| `recall.metadata_filter` | A flat JSON object, up to 20 keys. A scalar value means equality; a list of scalars (up to 20) means the stored list contains every element. Nested objects are rejected because containment on an object would not mean equality |
+| `recall.metadata_filter` | A flat JSON object, up to 20 keys. A scalar value means equality; a list of scalars (up to 20) means the stored list contains every element — a list never matches a stored scalar, and a scalar never matches a stored list. Nested objects are rejected because containment on an object would not mean equality |
 | `get_memories.memory_ids` | Max 20 IDs per call |
 | `recall.preview_chars` | Clamped to 0-1000 characters |
 

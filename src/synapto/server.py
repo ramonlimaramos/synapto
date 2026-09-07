@@ -750,9 +750,10 @@ async def recall(
             Cannot be combined with domain.
         metadata_filter: exact-key filter over a memory's metadata, for example
             {"failure_class": "missing_docstring"}. A scalar value means
-            equality; a list of scalars, for example {"products": ["jerry"]},
-            means the stored list contains every element. Nested objects are
-            rejected. A memory matches when every pair holds. When given,
+            equality; a list of scalars, for example {"products": ["assistant"]},
+            means the stored list contains every element; a list never
+            matches a stored scalar. Nested objects are rejected. A memory
+            matches when every pair holds. When given,
             the result reports the true number of matches, which is not capped
             by limit — that count is what an occurrence threshold needs.
         origin: restrict to writes of one provenance: "human", "agent", or
