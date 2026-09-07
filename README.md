@@ -69,7 +69,7 @@ synapto search "hello world"
 
 **Search** — Ask a question, get the best memory. Behind the scenes, three signals (vector similarity, full-text, and compositional algebra) are fused into one score. You just call `recall`.
 
-**Scopes** — A memory can declare where it applies: `repo:acme/api`, `language:python`, `skill:code-review`, `global:all`. `recall(scopes=[...])` returns only what applies to the context you are in, and an exact-key `metadata_filter` narrows further ("every finding with `failure_class = missing_docstring`", with a true total, not a page size).
+**Scopes** — A memory can declare where it applies: `repo:acme/api`, `language:python`, `skill:code-review`, `global:all`. `recall(scopes=[...])` returns only what applies to the context you are in, and a `metadata_filter` narrows further ("every finding with `failure_class = missing_docstring`", or every memory whose `products` list contains `inbox`, with a true total, not a page size). Scopes gate, metadata describes: a scope is a condition the reader must name, a metadata facet is a fact about the memory that never hides it from an unrelated query.
 
 **Provenance** — Every memory records who wrote it: `human`, `agent`, or `consolidation`. Recall can filter by origin, and `forget` refuses to delete a human-authored memory unless told explicitly.
 
@@ -192,6 +192,8 @@ Every target is a canonical, lowercase tenant. A fold from a canonical spelling 
 
 ### Scopes are typed
 
+A scope is a **condition**: a memory is returned only when the query names a key for every scope type the memory carries (OR within a type, AND across the types the memory itself carries). That is what makes a Python-only rule stay out of an Elixir session even when the query did not mention a language, and it is also why a scope is the wrong place for what a memory is merely *about*. Facts that describe a memory — the products it concerns, the repositories it cites, its language — belong in metadata (`products`, `repos`, `language`), where a `metadata_filter` selects them without hiding the memory from every other read. Scopes gate, metadata describes.
+
 A scope is `"<type>:<key>"`. Seven types exist: `global`, `product`, `repo`, `language`, `skill`, `workflow`, `area`. `global:all` is the only `global` key, and it cannot be combined with other scopes on the same memory. `area` names the discipline a memory belongs to (`area:software-engineering`, `area:finance`) rather than a place it applies; a memory with no `area` applies in every area, a query for one area never sees another area's memories, and a memory that carries an `area` is returned only by scoped queries that name that area (the rule below) — tag areas deliberately.
 
 ```text
@@ -240,7 +242,7 @@ get actionable errors instead of raw Postgres exceptions.
 | `tenant` | Canonical `owner/name`, max 100 characters |
 | `scopes` | Up to 20 unique `"<type>:<key>"` entries per memory or query |
 | `origin` | One of `human`, `agent`, `consolidation` |
-| `recall.metadata_filter` | A flat JSON object of scalars, up to 20 keys; nested values are rejected because containment would not mean equality |
+| `recall.metadata_filter` | A flat JSON object, up to 20 keys. A scalar value means equality; a list of scalars (up to 20) means the stored list contains every element — a list never matches a stored scalar, and a scalar never matches a stored list. Nested objects are rejected because containment on an object would not mean equality |
 | `get_memories.memory_ids` | Max 20 IDs per call |
 | `recall.preview_chars` | Clamped to 0-1000 characters |
 

@@ -29,3 +29,13 @@ metadata_filter = { verified = true }
 query = "acme/gateway proxy upgrade notes"
 expected = "metadata-upgrade-v4"
 metadata_filter = { version = 4 }
+
+[[case]]
+query = "acme/mailer inbox ingestion consumer retries"
+expected = "metadata-facet-inbox"
+metadata_filter = { products = ["inbox"] }
+
+[[case]]
+query = "acme/mailer inbox ingestion consumer retries"
+expected = "metadata-facet-assistant"
+metadata_filter = { products = ["assistant"], language = "python" }
