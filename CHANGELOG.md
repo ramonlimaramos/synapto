@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `area`, a seventh scope type: which area of work a memory belongs to (`area:software-engineering`, `area:engineering-management`, `area:finance`). The six existing types say where a memory applies or that it applies everywhere; none said which discipline it is about, which was invisible only while every memory was software-engineering knowledge. A rule that holds in every repository but not outside engineering can now say so without claiming `global:all`, which does not combine by design. Keys are free-form and canonical like every other type, and a memory with no `area` keeps applying in every area. The schema mirrors the contract, so this is migration `010`: the `memory_scopes_type_allowed` CHECK lists the seven types; the rollback restores the six-type CHECK and is refused while an `area` row exists (#114)
+
 ## [0.8.0] - 2026-09-06
 
 ### Added

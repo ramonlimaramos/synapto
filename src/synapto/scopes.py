@@ -2,8 +2,17 @@
 
 A scope answers "when does this memory apply?", as a typed ``(scope_type,
 scope_key)`` pair: ``repo:ramonlimaramos/synapto``, ``language:python``,
-``skill:jerry-workday``. A memory carries a set of them, so applicability is
-N:N rather than the single ``domain`` string it supersedes.
+``skill:jerry-workday``, ``area:software-engineering``. A memory carries a set
+of them, so applicability is N:N rather than the single ``domain`` string it
+supersedes.
+
+``area`` is the one type that names a discipline rather than a place: which
+area of work the memory belongs to (``software-engineering``,
+``engineering-management``, ``finance``). The other types say *where* a memory
+applies; ``area`` says *what kind of work* it is about, so a rule that holds in
+every repository but not outside engineering can say so without claiming
+``global``. Keys are free-form and canonical like every other type — an area
+exists once its first memory is written.
 
 Three deliberate design choices, each with a cost worth stating:
 
@@ -35,7 +44,7 @@ from dataclasses import dataclass
 GLOBAL_TYPE = "global"
 GLOBAL_KEY = "all"
 
-SCOPE_TYPES = frozenset({GLOBAL_TYPE, "product", "repo", "language", "skill", "workflow"})
+SCOPE_TYPES = frozenset({GLOBAL_TYPE, "product", "repo", "language", "skill", "workflow", "area"})
 
 MAX_SCOPES = 20
 MAX_SCOPE_KEY_CHARS = 128

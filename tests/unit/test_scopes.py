@@ -34,6 +34,21 @@ class TestScopeRefTypes:
         with pytest.raises(InvalidScopeError, match="workflow"):
             ScopeRef.parse("tenant", "python")
 
+    @pytest.mark.parametrize("key", ["software-engineering", "engineering-management", "finance"])
+    def test_area_names_a_discipline_with_the_plain_key_grammar(self, key):
+        assert ScopeRef.parse("area", key) == ScopeRef("area", key)
+
+    def test_area_combines_with_the_place_types_but_not_with_global(self):
+        combined = ScopeSet.parse(["area:software-engineering", "language:python", "repo:acme/api"])
+
+        assert combined.scopes == (
+            ScopeRef("area", "software-engineering"),
+            ScopeRef("language", "python"),
+            ScopeRef("repo", "acme/api"),
+        )
+        with pytest.raises(InvalidScopeError):
+            ScopeSet.parse(["area:software-engineering", "global:all"])
+
 
 class TestScopeKeyMustArriveCanonical:
     """Keys are rejected, never repaired — canonicalization is the caller's job."""
@@ -130,7 +145,7 @@ class TestRepoScope:
         with pytest.raises(InvalidScopeError):
             ScopeRef.parse("repo", key)
 
-    @pytest.mark.parametrize("scope_type", ["language", "skill", "product", "workflow"])
+    @pytest.mark.parametrize("scope_type", ["language", "skill", "product", "workflow", "area"])
     def test_other_types_reject_slashes(self, scope_type):
         with pytest.raises(InvalidScopeError):
             ScopeRef.parse(scope_type, "owner/repo")
@@ -409,7 +424,7 @@ class TestCompactStringForm:
             ScopeSet.parse(["python"])
 
     def test_the_rejection_lists_the_accepted_types(self):
-        with pytest.raises(InvalidScopeError, match="global, language, product, repo, skill, workflow"):
+        with pytest.raises(InvalidScopeError, match="area, global, language, product, repo, skill, workflow"):
             ScopeSet.parse(["python"])
 
     def test_an_unknown_type_is_still_rejected(self):

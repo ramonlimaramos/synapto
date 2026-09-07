@@ -7,7 +7,7 @@ from psycopg import errors as pg_errors
 
 from synapto.db.migrations import run_migrations
 from synapto.repositories.scopes import ScopeRepository, UnknownMemoryError
-from synapto.scopes import GLOBAL_KEY, GLOBAL_TYPE, MAX_SCOPES, InvalidScopeError, ScopeRef, ScopeSet
+from synapto.scopes import GLOBAL_KEY, GLOBAL_TYPE, MAX_SCOPES, SCOPE_TYPES, InvalidScopeError, ScopeRef, ScopeSet
 
 TENANT = "test_scope_repository"
 
@@ -469,12 +469,25 @@ class TestReadsFailClosedOnCorruptRows:
             await pg.execute(
                 """
                 ALTER TABLE memory_scopes ADD CONSTRAINT memory_scopes_type_allowed
-                CHECK (scope_type IN ('global', 'product', 'repo', 'language', 'skill', 'workflow'));
+                CHECK (scope_type IN ('global', 'product', 'repo', 'language', 'skill', 'workflow', 'area'));
                 """
             )
 
 
 class TestStorageConstraintsMirrorTheContract:
+    @pytest.mark.parametrize("scope_type", sorted(SCOPE_TYPES))
+    async def test_every_declared_type_is_accepted_by_the_database(self, pg, scope_type):
+        memory_id = await _insert_memory(pg)
+        key = GLOBAL_KEY if scope_type == GLOBAL_TYPE else ("owner/repo" if scope_type == "repo" else "python")
+
+        await pg.execute(
+            "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+            (memory_id, scope_type, key),
+        )
+
+        stored = await ScopeRepository(pg).get_for_memory(memory_id)
+        assert stored == _scopes((scope_type, key))
+
     @pytest.mark.parametrize("scope_type", ["tenant", "domain", "GLOBAL", "unknown"])
     async def test_unknown_types_are_rejected_by_the_database(self, pg, scope_type):
         memory_id = await _insert_memory(pg)
