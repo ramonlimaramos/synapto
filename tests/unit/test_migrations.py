@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from textwrap import dedent
 
 import pytest
@@ -18,6 +19,7 @@ from synapto.db.migrations import (
     migrate_up,
     run_migrations,
 )
+from synapto.scopes import SCOPE_TYPES
 
 TMP_MIGRATION_FILENAMES = ("001_create_foo.sql", "002_add_bar.sql")
 
@@ -342,7 +344,10 @@ class TestAreaScopeTypeMigration:
         return rows[0]["def"]
 
     async def test_up_accepts_area_and_keeps_the_six_types(self, pg):
+        """The CHECK and ``SCOPE_TYPES`` must agree in both directions: a type the schema
+        accepts but Python does not would be storable and never filterable."""
         await run_migrations(pg)
+        assert set(re.findall(r"'(\w+)'", await self._allowed_types(pg))) == SCOPE_TYPES
         memory_id = await self._memory(pg)
         try:
             for scope_type in (*self.SIX_TYPES, "area"):

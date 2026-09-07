@@ -35,6 +35,24 @@ def _scopes(*pairs) -> ScopeSet:
     return ScopeSet.parse([{"type": t, "key": k} for t, k in pairs])
 
 
+TYPE_CHECK = "memory_scopes_type_allowed"
+
+
+async def _constraint_definition(pg, name: str) -> str:
+    """Return the live definition of ``name`` so a test can drop it and reinstall it verbatim.
+
+    The migrations own the type list; a test that re-created the CHECK from
+    its own literal would be a second copy that drifts silently and leaves the
+    test database with a stale constraint the runner never repairs. One
+    catalog lookup, O(1).
+    """
+    row = await pg.execute_one(
+        "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = %s;",
+        (name,),
+    )
+    return row["definition"]
+
+
 class _CountingClient:
     """Wraps a real client to prove how many queries an operation issues."""
 
@@ -451,11 +469,12 @@ class TestMemoryIdNormalization:
 
 class TestReadsFailClosedOnCorruptRows:
     async def test_a_row_violating_the_contract_is_not_returned_as_valid(self, pg):
-        # the CHECK constraints make this unreachable through SQL, so the row is
-        # planted with the constraint temporarily dropped — the point is that
-        # rehydration validates rather than trusting storage
+        """The CHECK makes a bad type unreachable through SQL, so the row is planted with the
+        constraint dropped and the very same constraint reinstalled afterwards; the point is
+        that rehydration validates rather than trusting storage."""
         memory_id = await _insert_memory(pg)
-        await pg.execute("ALTER TABLE memory_scopes DROP CONSTRAINT memory_scopes_type_allowed;")
+        definition = await _constraint_definition(pg, TYPE_CHECK)
+        await pg.execute(f"ALTER TABLE memory_scopes DROP CONSTRAINT {TYPE_CHECK};")
         try:
             await pg.execute(
                 "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
@@ -466,12 +485,7 @@ class TestReadsFailClosedOnCorruptRows:
                 await ScopeRepository(pg).get_for_memory(memory_id)
         finally:
             await pg.execute("DELETE FROM memory_scopes WHERE memory_id = %s;", (memory_id,))
-            await pg.execute(
-                """
-                ALTER TABLE memory_scopes ADD CONSTRAINT memory_scopes_type_allowed
-                CHECK (scope_type IN ('global', 'product', 'repo', 'language', 'skill', 'workflow', 'area'));
-                """
-            )
+            await pg.execute(f"ALTER TABLE memory_scopes ADD CONSTRAINT {TYPE_CHECK} {definition};")
 
 
 class TestStorageConstraintsMirrorTheContract:
