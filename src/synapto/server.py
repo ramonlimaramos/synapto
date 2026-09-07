@@ -502,10 +502,15 @@ async def remember(
     - project: working, stable, archived.
     - user: role, preference, skill, constraint.
 
-    Optional domain scopes a memory to a skill/repo/language bounded context
-    (for example python, elixir, synapto, jerry-workday). Store durable
-    skill/domain knowledge with a domain so recall can filter by domain instead
-    of guessing from the semantic query.
+    Scopes say where a memory applies, as "<type>:<key>" strings: repo:acme/api,
+    language:python, product:<name>, skill:<name>, workflow:<name>,
+    area:software-engineering, or global:all on its own. area names the
+    discipline the memory belongs to (software-engineering, engineering-management,
+    finance); a memory with no area applies in every area, and one that carries
+    an area is returned only by scoped recalls that name it. Store durable
+    knowledge with scopes so recall can filter by them instead of guessing from
+    the semantic query. domain is the deprecated single-label predecessor: still
+    accepted, but new writes should use scopes.
 
     Recommended depth_layer choices:
     - core: rules that should not expire, such as "always" or "never" feedback.
@@ -517,12 +522,15 @@ async def remember(
         content: memory content to store (text; no Synapto length limit)
         memory_type: category (general, user, feedback, project, reference; max 20 chars)
         subtype: optional free-form subcategory (recommended values documented; max 50 chars)
-        domain: optional skill/repo/language bounded context (max 50 chars)
+        domain: DEPRECATED single-value axis, superseded by scopes (max 50 chars)
         tenant: project/tenant scope (defaults to config default; max 100 chars)
         depth_layer: core, stable, working, or ephemeral (max 20 chars)
         summary: optional short summary (max 255 chars)
         metadata: optional JSON metadata
         extract_entities: auto-extract and link entities from content
+        scopes: applicability scopes as "<type>:<key>" strings, for example
+            ["area:software-engineering", "repo:acme/api"]. Cannot be combined
+            with domain.
     """
     _validate_memory_fields(
         memory_type=memory_type,

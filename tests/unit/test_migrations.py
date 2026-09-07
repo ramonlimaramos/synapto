@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from textwrap import dedent
 
 import pytest
+from psycopg import errors as pg_errors
 
 from synapto.db.migrations import (
     _compute_checksum,
@@ -17,6 +19,7 @@ from synapto.db.migrations import (
     migrate_up,
     run_migrations,
 )
+from synapto.scopes import SCOPE_TYPES
 
 TMP_MIGRATION_FILENAMES = ("001_create_foo.sql", "002_add_bar.sql")
 
@@ -317,3 +320,83 @@ class TestMemoryScopesMigration:
         await run_migrations(pg)
         assert len(columns) == 1, "migration 006 rollback removed the 005 domain column"
         assert len(indexes) == 1, "migration 006 rollback removed the 005 domain index"
+
+
+class TestAreaScopeTypeMigration:
+    """Migration 010 — the ``area`` scope type joins the CHECK that mirrors ``SCOPE_TYPES``."""
+
+    SIX_TYPES = ("global", "product", "repo", "language", "skill", "workflow")
+
+    async def _memory(self, pg) -> str:
+        rows = await pg.execute(
+            "INSERT INTO memories (content, tenant) VALUES (%s, 'acme/migration-010') RETURNING id;",
+            ("an area-scoped memory",),
+        )
+        return str(rows[0]["id"])
+
+    async def _cleanup(self, pg) -> None:
+        await pg.execute("DELETE FROM memories WHERE tenant = 'acme/migration-010';")
+
+    async def _allowed_types(self, pg) -> str:
+        rows = await pg.execute(
+            "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'memory_scopes_type_allowed';"
+        )
+        return rows[0]["def"]
+
+    async def test_up_accepts_area_and_keeps_the_six_types(self, pg):
+        """The CHECK and ``SCOPE_TYPES`` must agree in both directions: a type the schema
+        accepts but Python does not would be storable and never filterable."""
+        await run_migrations(pg)
+        assert set(re.findall(r"'(\w+)'", await self._allowed_types(pg))) == SCOPE_TYPES
+        memory_id = await self._memory(pg)
+        try:
+            for scope_type in (*self.SIX_TYPES, "area"):
+                key = "all" if scope_type == "global" else ("owner/repo" if scope_type == "repo" else "python")
+                await pg.execute(
+                    "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, %s, %s);",
+                    (memory_id, scope_type, key),
+                )
+            with pytest.raises(pg_errors.CheckViolation):
+                await pg.execute(
+                    "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, 'tenant', 'python');",
+                    (memory_id,),
+                )
+        finally:
+            await self._cleanup(pg)
+
+    async def test_down_restores_the_six_type_check(self, pg):
+        await run_migrations(pg)
+
+        rolled_back = await migrate_down(pg, target_version=9)
+
+        assert rolled_back == ["010_add_area_scope_type.sql"]
+        assert "'area'" not in await self._allowed_types(pg)
+        memory_id = await self._memory(pg)
+        try:
+            with pytest.raises(pg_errors.CheckViolation):
+                await pg.execute(
+                    "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, 'area', 'finance');",
+                    (memory_id,),
+                )
+        finally:
+            await self._cleanup(pg)
+            await run_migrations(pg)
+
+    async def test_down_is_refused_while_an_area_row_exists(self, pg):
+        await run_migrations(pg)
+        memory_id = await self._memory(pg)
+        await pg.execute(
+            "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, 'area', 'finance');",
+            (memory_id,),
+        )
+        try:
+            with pytest.raises(pg_errors.CheckViolation):
+                await migrate_down(pg, target_version=9)
+
+            assert "010_add_area_scope_type.sql" in await get_applied_migrations(pg)
+            assert "'area'" in await self._allowed_types(pg)
+            rows = await pg.execute("SELECT scope_type FROM memory_scopes WHERE memory_id = %s;", (memory_id,))
+            assert [r["scope_type"] for r in rows] == ["area"]
+        finally:
+            await self._cleanup(pg)
+            await run_migrations(pg)

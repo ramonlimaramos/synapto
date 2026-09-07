@@ -192,7 +192,7 @@ Every target is a canonical, lowercase tenant. A fold from a canonical spelling 
 
 ### Scopes are typed
 
-A scope is `"<type>:<key>"`. Six types exist: `global`, `product`, `repo`, `language`, `skill`, `workflow`. `global:all` is the only `global` key, and it cannot be combined with other scopes on the same memory.
+A scope is `"<type>:<key>"`. Seven types exist: `global`, `product`, `repo`, `language`, `skill`, `workflow`, `area`. `global:all` is the only `global` key, and it cannot be combined with other scopes on the same memory. `area` names the discipline a memory belongs to (`area:software-engineering`, `area:finance`) rather than a place it applies; a memory with no `area` applies in every area, a query for one area never sees another area's memories, and a memory that carries an `area` is returned only by scoped queries that name that area (the rule below) — tag areas deliberately.
 
 ```text
 remember("Run ruff before every commit", scopes=["repo:acme/api", "language:python"])

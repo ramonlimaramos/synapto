@@ -111,13 +111,16 @@ async def test_ping_returns_pong_without_dependencies():
     assert await ping() == "pong"
 
 
-async def test_remember_description_documents_domain_bounded_context():
+async def test_remember_description_documents_scopes_and_deprecates_domain():
+    """The writer's description is what an agent reads before storing; a scope type
+    it never mentions is a scope type nothing will ever write."""
     remember = await mcp.get_tool("remember")
 
     for phrase in (
-        "domain: optional skill/repo/language bounded context (max 50 chars)",
-        "jerry-workday",
-        "recall can filter by domain",
+        'scopes: applicability scopes as "<type>:<key>" strings',
+        "area:software-engineering",
+        "is returned only by scoped recalls that name it",
+        "domain: DEPRECATED single-value axis, superseded by scopes (max 50 chars)",
     ):
         assert phrase in remember.description
 
