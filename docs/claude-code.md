@@ -98,9 +98,10 @@ Continue from Synapto handoff b0e1506e-d1b7-4bee-9223-4d0f8d18a1b2.
 Don't edit yet — read it, verify metadata, fetch related context, then propose.
 ```
 
-Claude should call `get_memory`, verify `metadata.kind = "agent_handoff"`, fetch
-any `context_ids`, and continue from the packet. If the user asks "any handoffs
-for you?" without an ID, Claude can use the inbox template plus `recall`.
+Claude should call `get_memory`, verify `metadata.kind = "handoff"` (or the
+legacy `agent_handoff`), fetch any `context_ids`, and continue from the packet.
+If the user asks "any handoffs for you?" without an ID, Claude uses the inbox
+template, which is a `metadata_filter` lookup rather than a ranked search.
 
 Synapto also exposes explicit MCP tools for agent coordination in Claude Code.
 Some MCP clients expose Synapto's `agent_handoff` and `handoff_inbox` prompts
@@ -128,11 +129,11 @@ mcp__synapto__handoff_inbox_template(
 )
 ```
 
-The template tools instruct Claude to use the normal Synapto tools: `remember`
-stores the handoff, `recall` discovers ranked candidate handoffs, and
-`get_memory` fetches the full handoff packet so Claude can verify metadata before
-acting. See [Cross-agent handoffs](handoffs.md) for the metadata schema and
-safety rules.
+The template tools instruct Claude to use the normal Synapto tools: `recall`
+with a `metadata_filter` finds a task's packet, `get_memory` reads it,
+`update_memory` extends it as the state advances, and `remember` creates it only
+when none exists — one packet per task. See [Cross-agent handoffs](handoffs.md)
+for the metadata schema and safety rules.
 
 ## Memory type alignment
 

@@ -34,6 +34,7 @@ from synapto.repositories.tenants import TenantAliasRepository
 from synapto.scopes import InvalidScopeError, ScopeSet, reject_conflicting_scope_arguments
 from synapto.search.graph import traverse
 from synapto.search.hybrid import (
+    DEPTH_BOOST,
     InvalidMetadataFilterError,
     count_memories,
     hybrid_search,
@@ -136,6 +137,7 @@ MAX_SUBTYPE_CHARS = 50
 MAX_DOMAIN_CHARS = 50
 MAX_TENANT_CHARS = 100
 MAX_DEPTH_LAYER_CHARS = 20
+DEPTH_LAYERS = tuple(DEPTH_BOOST)
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
 
 
@@ -363,6 +365,7 @@ def agent_handoff_prompt(
     next_action: str = "",
     summary: str = "",
     pr_url: str = "",
+    area: str = "software-engineering",
 ) -> str:
     """Prompt an agent to append a structured cross-agent handoff memory."""
     return render_agent_handoff_prompt(
@@ -378,6 +381,7 @@ def agent_handoff_prompt(
         next_action=next_action,
         summary=summary,
         pr_url=pr_url,
+        area=area,
     )
 
 
@@ -416,8 +420,14 @@ def agent_handoff_template(
     next_action: str = "",
     summary: str = "",
     pr_url: str = "",
+    area: str = "software-engineering",
 ) -> str:
-    """Render instructions for creating a structured cross-agent handoff memory.
+    """Render instructions for creating or extending a task's handoff packet.
+
+    One packet per ``task_id``: the instructions look the packet up by
+    ``metadata_filter`` and extend it with ``update_memory``; ``remember`` is
+    the path only when none exists. ``area`` is the single scope the packet
+    carries, because scopes gate reads and a repository is a fact for metadata.
 
     This mirrors the `agent_handoff` MCP prompt for clients that expose tools but
     not MCP prompts, such as some Claude Code sessions.
@@ -435,6 +445,7 @@ def agent_handoff_template(
         next_action=next_action,
         summary=summary,
         pr_url=pr_url,
+        area=area,
     )
 
 
@@ -446,7 +457,12 @@ def handoff_inbox_template(
     status: str = "ready_for_implementation",
     limit: int | str = DEFAULT_HANDOFF_LIMIT,
 ) -> str:
-    """Render instructions for finding assigned cross-agent handoff memories.
+    """Render instructions for finding a task's handoff packet by metadata.
+
+    The lookup is ``metadata_filter`` on ``kind``, ``to_agent``, ``status`` and
+    optionally ``task_id`` — an exact match, so the answer is the packet rather
+    than ranked candidates. Packets written under the legacy ``agent_handoff``
+    kind are looked up too.
 
     This mirrors the `handoff_inbox` MCP prompt for clients that expose tools but
     not MCP prompts, such as some Claude Code sessions.
@@ -600,6 +616,7 @@ async def update_memory(
     metadata_patch: dict[str, Any] | None = None,
     append: str | None = None,
     scopes: list[str] | None = None,
+    depth_layer: str | None = None,
 ) -> str:
     """Update an existing memory without re-sending the whole record.
 
@@ -613,13 +630,26 @@ async def update_memory(
             the argument preserves what the memory already carries; an empty list
             clears them. Rescoping authorizes through the memory's tenant and
             commits with the field changes in one transaction.
+        depth_layer: replacement layer — core, stable, working, or ephemeral. A
+            handoff or checkpoint packet whose status reaches done moves to
+            ephemeral in the same call, so maintenance retires it instead of
+            leaving a finished task ranking as working forever.
     """
     if content is not None and append is not None:
         raise ToolError("content and append are mutually exclusive; provide one or the other")
-    if content is None and summary is None and metadata_patch is None and append is None and scopes is None:
+    if (
+        content is None
+        and summary is None
+        and metadata_patch is None
+        and append is None
+        and scopes is None
+        and depth_layer is None
+    ):
         raise ToolError("provide at least one field to update")
     if metadata_patch is not None and not isinstance(metadata_patch, dict):
         raise ToolError("metadata_patch must be a JSON object")
+    if depth_layer is not None and depth_layer not in DEPTH_LAYERS:
+        raise ToolError(f"unknown depth_layer {depth_layer!r} — accepted layers are: {', '.join(DEPTH_LAYERS)}")
 
     _validate_memory_fields(summary=summary)
     parsed_scopes = _parse_scopes(None, scopes)
@@ -654,6 +684,7 @@ async def update_memory(
             embedding_dim=embedding_dim,
             summary=summary,
             metadata_patch=metadata_patch,
+            depth_layer=depth_layer,
         )
     else:
         updated = await repo.update_with_scopes(
@@ -665,6 +696,7 @@ async def update_memory(
             summary=summary,
             metadata_patch=metadata_patch,
             scopes=parsed_scopes,
+            depth_layer=depth_layer,
         )
     if not updated:
         return f"memory {memory_id} not found or deleted"
@@ -699,6 +731,8 @@ async def update_memory(
         changed.append("metadata")
     if parsed_scopes is not None:
         changed.append("scopes")
+    if depth_layer is not None:
+        changed.append("depth_layer")
     return f"updated memory {parsed_id} ({', '.join(changed)})"
 
 

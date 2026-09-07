@@ -18,6 +18,7 @@ from synapto.coordination import (
     render_agent_handoff_prompt,
     render_handoff_inbox_prompt,
 )
+from synapto.scopes import InvalidScopeError
 
 
 def test_build_handoff_metadata_normalizes_list_fields() -> None:
@@ -128,12 +129,18 @@ def test_render_agent_handoff_prompt_contains_remember_contract() -> None:
         summary="Handoff for implementation",
     )
 
-    assert "Call `remember` exactly once" in prompt
+    assert "call `remember` exactly once" in prompt
     assert "memory_type: `project`" in prompt
+    assert "subtype: `handoff`" in prompt
     assert "depth_layer: `working`" in prompt
+    assert "origin: `agent`" in prompt
+    assert 'scopes: `["area:software-engineering"]`' in prompt
     assert "handoff:synapto-123 ready_for_implementation -> claude-opus-4.7" in prompt
     assert "Do not edit files outside `files_scope`" in prompt
     assert "get_memory" in prompt
+    assert 'metadata_filter={"kind": "handoff", "task_id": "synapto-123"}' in prompt
+    assert "update_memory(" in prompt
+    assert prompt.index("update_memory(") < prompt.index("call `remember` exactly once")
 
     metadata_start = prompt.index("```json\n") + len("```json\n")
     metadata_end = prompt.index("\n```", metadata_start)
@@ -142,7 +149,28 @@ def test_render_agent_handoff_prompt_contains_remember_contract() -> None:
     assert metadata["files_scope"] == ["src/synapto/server.py"]
 
 
-def test_render_handoff_inbox_prompt_uses_two_stage_retrieval() -> None:
+@pytest.mark.parametrize(
+    ("area", "reason"),
+    [
+        ("Software Engineering", "lowercase"),
+        (" finance", "already trimmed"),
+        ("FINANCE", "lowercase"),
+        ("finance/ops", "does not accept '/'"),
+    ],
+)
+def test_render_agent_handoff_prompt_rejects_a_non_canonical_area(area: str, reason: str) -> None:
+    """The area becomes a scope key, so the prompt applies the scope grammar and names the canonical form."""
+    with pytest.raises(InvalidScopeError, match=reason):
+        render_agent_handoff_prompt(task_id="budget-2026", from_agent="codex", to_agent="claude", area=area)
+
+
+def test_render_agent_handoff_prompt_defaults_the_area_when_empty() -> None:
+    prompt = render_agent_handoff_prompt(task_id="budget-2026", from_agent="codex", to_agent="claude", area="")
+
+    assert 'scopes: `["area:software-engineering"]`' in prompt
+
+
+def test_render_handoff_inbox_prompt_looks_packets_up_by_metadata() -> None:
     prompt = render_handoff_inbox_prompt(
         agent="claude-opus-4.7",
         tenant="synapto",
@@ -154,11 +182,15 @@ def test_render_handoff_inbox_prompt_uses_two_stage_retrieval() -> None:
     assert "recall" in prompt
     assert "preview_chars=200" in prompt
     assert "limit=7" in prompt
-    assert "agent handoff for claude-opus-4.7" in prompt
-    assert "status ready_for_implementation" in prompt
-    assert "task synapto-123" in prompt
-    assert "candidates are ranked by recall, not filtered by metadata fields" in prompt
+    assert (
+        'metadata_filter=`{"kind": "handoff", "to_agent": "claude-opus-4.7", '
+        '"status": "ready_for_implementation", "task_id": "synapto-123"}`'
+    ) in prompt
+    assert '{"kind": "agent_handoff", "to_agent": "claude-opus-4.7"' in prompt
+    assert "an exact match" in prompt
     assert "get_memory(id)" in prompt
+    assert "extend the SAME packet" in prompt
+    assert 'depth_layer="ephemeral"' in prompt
 
 
 def test_docs_metadata_schema_matches_builder() -> None:

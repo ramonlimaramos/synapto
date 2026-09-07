@@ -89,6 +89,7 @@ UPDATE_MEMORY = """
             WHEN %(meta_provided)s THEN COALESCE(metadata, '{}'::jsonb) || %(meta)s::jsonb
             ELSE metadata
         END,
+        depth_layer = CASE WHEN %(layer_provided)s THEN %(layer)s ELSE depth_layer END,
         accessed_at = now()
     WHERE id = %(id)s AND deleted_at IS NULL
     RETURNING

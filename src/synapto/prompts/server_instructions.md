@@ -39,19 +39,21 @@ Cross-agent handoffs:
   "continue from this Synapto handoff ID" as handoff workflows. Do the
   structured memory work under the hood instead of asking the user to build
   metadata payloads.
-- When handing work to another agent or IDE, store a `project` / `working`
-  memory whose metadata includes `kind: "agent_handoff"` and a shared `task_id`.
-- Return the new memory ID to the user so another agent can continue with
+- A task has ONE handoff packet. Before writing, look it up with
+  `recall(task_id, metadata_filter={"kind": "handoff", "task_id": ...})` (and
+  `kind: "agent_handoff"` for packets whose `schema_version` is 1); extend an existing
+  packet with `update_memory(append=..., metadata_patch={"status": ...})`. Only
+  when none exists, store a `project` memory with `subtype: "handoff"`,
+  `origin: "agent"`, `scopes: ["area:<discipline>"]`, tenant omitted (derived)
+  or `<owner>/workspace` for a multi-repo task, and the shared `task_id`.
+- Return the packet ID to the user so another agent can continue with
   `get_memory(id)`.
-- When receiving a handoff, call `recall` with the task id or target agent,
-  then call `get_memory(id)` to fetch the full state packet before acting.
-  `recall` returns ranked candidates, not deterministic metadata-filtered rows,
-  so verify `metadata.kind`, `metadata.to_agent`, `metadata.status`, and
-  `metadata.task_id` after fetching the full memory.
+- When receiving a handoff, look the packet up by `metadata_filter`, then call
+  `get_memory(id)` to read the full state and any `context_ids` before acting.
 - Treat `files_scope` as an advisory claim. Do not edit outside it unless the
-  user expands the scope. Append follow-up memories instead of mutating old ones.
-- Use `update_memory` for narrow corrections, summary fixes, metadata patches,
-  or appending clarifying text to an existing memory.
+  user expands the scope. A second memory for the same `task_id` is a defect.
+- When the task is done, set `status: "done"` and `depth_layer: "ephemeral"`
+  in one `update_memory` call so maintenance retires the packet.
 
 Depth layers control decay:
 - core: forever (rules, identity)
