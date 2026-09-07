@@ -18,6 +18,7 @@ from synapto.coordination import (
     render_agent_handoff_prompt,
     render_handoff_inbox_prompt,
 )
+from synapto.scopes import InvalidScopeError
 
 
 def test_build_handoff_metadata_normalizes_list_fields() -> None:
@@ -146,6 +147,27 @@ def test_render_agent_handoff_prompt_contains_remember_contract() -> None:
     metadata = json.loads(prompt[metadata_start:metadata_end])
     assert metadata["kind"] == HANDOFF_KIND
     assert metadata["files_scope"] == ["src/synapto/server.py"]
+
+
+@pytest.mark.parametrize(
+    ("area", "reason"),
+    [
+        ("Software Engineering", "lowercase"),
+        (" finance", "already trimmed"),
+        ("FINANCE", "lowercase"),
+        ("finance/ops", "does not accept '/'"),
+    ],
+)
+def test_render_agent_handoff_prompt_rejects_a_non_canonical_area(area: str, reason: str) -> None:
+    """The area becomes a scope key, so the prompt applies the scope grammar and names the canonical form."""
+    with pytest.raises(InvalidScopeError, match=reason):
+        render_agent_handoff_prompt(task_id="budget-2026", from_agent="codex", to_agent="claude", area=area)
+
+
+def test_render_agent_handoff_prompt_defaults_the_area_when_empty() -> None:
+    prompt = render_agent_handoff_prompt(task_id="budget-2026", from_agent="codex", to_agent="claude", area="")
+
+    assert 'scopes: `["area:software-engineering"]`' in prompt
 
 
 def test_render_handoff_inbox_prompt_looks_packets_up_by_metadata() -> None:

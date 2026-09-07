@@ -34,6 +34,7 @@ from synapto.repositories.tenants import TenantAliasRepository
 from synapto.scopes import InvalidScopeError, ScopeSet, reject_conflicting_scope_arguments
 from synapto.search.graph import traverse
 from synapto.search.hybrid import (
+    DEPTH_BOOST,
     InvalidMetadataFilterError,
     count_memories,
     hybrid_search,
@@ -136,7 +137,7 @@ MAX_SUBTYPE_CHARS = 50
 MAX_DOMAIN_CHARS = 50
 MAX_TENANT_CHARS = 100
 MAX_DEPTH_LAYER_CHARS = 20
-DEPTH_LAYERS = ("core", "stable", "working", "ephemeral")
+DEPTH_LAYERS = tuple(DEPTH_BOOST)
 RECALL_CONTENT_ELIDED = "[content elided - fetch full via get_memory(id)]"
 
 

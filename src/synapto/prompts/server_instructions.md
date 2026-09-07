@@ -41,7 +41,7 @@ Cross-agent handoffs:
   metadata payloads.
 - A task has ONE handoff packet. Before writing, look it up with
   `recall(task_id, metadata_filter={"kind": "handoff", "task_id": ...})` (and
-  `kind: "agent_handoff"` for packets written before 0.9.0); extend an existing
+  `kind: "agent_handoff"` for packets whose `schema_version` is 1); extend an existing
   packet with `update_memory(append=..., metadata_patch={"status": ...})`. Only
   when none exists, store a `project` memory with `subtype: "handoff"`,
   `origin: "agent"`, `scopes: ["area:<discipline>"]`, tenant omitted (derived)

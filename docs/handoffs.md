@@ -60,7 +60,7 @@ The MVP stores handoffs in the existing `memories` table:
 | `tenant` | Omitted inside the repository (derived from the git remote); `<owner>/workspace` for a task spanning repositories |
 | `summary` | Routing title, for example `handoff:synapto-123 ready_for_implementation -> claude-opus-4.7` |
 | `content` | Human-readable state packet with goal, decisions, scope, next action, validation, and blockers, followed by dated entries appended as the task advances |
-| `metadata.kind` | `handoff` (`agent_handoff` before 0.9.0; readers accept both) |
+| `metadata.kind` | `handoff` (`agent_handoff` while `schema_version` was 1; readers accept both) |
 | `metadata.schema_version` | `2` |
 
 No migration is required. The metadata is JSONB, and `recall(metadata_filter=…)`
@@ -220,7 +220,7 @@ get_memory("<handoff-id>")
 
 `metadata_filter` is an exact match, so the result is the packet rather than a
 ranked candidate list. Repeat the call with `"kind": "agent_handoff"` for packets
-written before 0.9.0, and read the full packet with `get_memory` before acting.
+whose `schema_version` is 1, and read the full packet with `get_memory` before acting.
 
 If the handoff includes `context_ids`, fetch those too:
 

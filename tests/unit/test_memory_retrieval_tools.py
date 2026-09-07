@@ -11,9 +11,11 @@ from psycopg.types.json import Jsonb
 
 from synapto import server
 from synapto.db.migrations import run_migrations
+from synapto.decay.scoring import HALF_LIFE_HOURS
 from synapto.repositories.entities import EntityRepository
 from synapto.repositories.memories import MemoryRepository
 from synapto.repositories.relations import RelationRepository
+from synapto.search.hybrid import DEPTH_BOOST
 
 TENANT = "test_memory_retrieval_tools"
 
@@ -306,6 +308,12 @@ async def test_update_memory_rejects_an_unknown_depth_layer():
     """The layer alone counts as a change, and an unknown one is refused before any database access."""
     with pytest.raises(ToolError, match="core, stable, working, ephemeral"):
         await server.update_memory("550e8400-e29b-41d4-a716-446655440000", depth_layer="archived")
+
+
+def test_update_memory_layer_vocabulary_is_the_ranking_and_decay_vocabulary():
+    """The layers ``update_memory`` accepts are exactly the ones ranking boosts and decay knows half-lives for."""
+    assert server.DEPTH_LAYERS == tuple(DEPTH_BOOST)
+    assert set(server.DEPTH_LAYERS) == set(HALF_LIFE_HOURS)
 
 
 async def test_update_memory_rejects_empty_patch():

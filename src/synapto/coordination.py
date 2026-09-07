@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from synapto.scopes import ScopeRef
+
 HANDOFF_KIND = "handoff"
 LEGACY_HANDOFF_KIND = "agent_handoff"
 HANDOFF_SCHEMA_VERSION = 2
@@ -43,6 +45,20 @@ def _safe_inline(value: str | None, *, name: str) -> str:
     if len(text) > _MAX_INLINE_LEN:
         raise ValueError(f"{name!r} exceeds {_MAX_INLINE_LEN} chars")
     return text
+
+
+def _canonical_area(area: str | None) -> str:
+    """Return the ``area`` scope key the packet will carry, or the default when none was given.
+
+    The value goes through the same grammar ``remember`` applies to a scope key, so a
+    non-canonical area fails here, at the prompt, with the message naming the canonical
+    form — instead of failing later at the agent's ``remember`` call, after the packet
+    text was composed around it. Nothing is repaired: an empty value selects the
+    default, any other value must already be canonical. One pattern match, O(len(area)).
+    """
+    if not area:
+        return DEFAULT_HANDOFF_AREA
+    return ScopeRef.parse("area", area).scope_key
 
 
 def _safe_text(value: str | None, *, name: str) -> str:
@@ -129,7 +145,7 @@ def render_agent_handoff_prompt(
     area: str = DEFAULT_HANDOFF_AREA,
 ) -> str:
     """Render an MCP prompt that teaches an agent to create or extend a handoff packet."""
-    safe_area = _safe_inline(area, name="area") or DEFAULT_HANDOFF_AREA
+    safe_area = _canonical_area(area)
     metadata = build_handoff_metadata(
         task_id=task_id,
         from_agent=from_agent,
