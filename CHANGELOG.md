@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- A filtered `recall` (`scopes`, `metadata_filter` or `origin`) failed with "domain and scopes cannot be combined" whenever the last result rendered carried a legacy `domain`. The loop that formats results reused the tool's `domain` parameter as its loop variable, so the match count that follows inherited the last row's stored domain instead of the caller's argument and refused the caller's scopes as a conflicting axis. The count now uses the caller's arguments; a regression test renders a scoped memory that still carries a legacy domain
+
 ## [0.8.1] - 2026-09-07
 
 ### Added

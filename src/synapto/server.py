@@ -798,8 +798,8 @@ async def recall(
             if len(r.content) > preview_chars:
                 preview += "..."
         type_label = r.type if not getattr(r, "subtype", None) else f"{r.type}/{r.subtype}"
-        domain = getattr(r, "domain", None)
-        domain_label = f" domain={domain}" if domain else ""
+        row_domain = getattr(r, "domain", None)
+        domain_label = f" domain={row_domain}" if row_domain else ""
         result_scopes = getattr(r, "scopes", None)
         scope_label = f" scopes={_format_scopes(result_scopes)}" if result_scopes else ""
         memories.append(

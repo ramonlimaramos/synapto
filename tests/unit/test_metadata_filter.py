@@ -221,6 +221,31 @@ class TestRecallExposesBoth:
 
         assert "Recalled 5 memories of 12 matching the filters" in found
 
+    async def test_a_legacy_domain_on_a_result_does_not_poison_the_count(self, wired, provider):
+        """The count after a filtered recall must use the caller's arguments, not the last row's.
+
+        A memory written before typed scopes carries a legacy ``domain``; when
+        such a row is the last one rendered, the count query used to inherit
+        its domain and refuse the caller's ``scopes`` as a conflicting axis.
+        """
+        embedding = (await provider.embed(["finding"]))[0]
+        rows = await wired.execute(
+            """
+            INSERT INTO memories (content, embedding, embedding_dim, type, tenant, depth_layer, metadata, domain)
+            VALUES (%s, %s, %s, 'general', %s, 'working', '{}'::jsonb, 'legacy-domain') RETURNING id;
+            """,
+            ("scoped legacy finding", embedding, provider.dimension, TENANT),
+        )
+        await wired.execute(
+            "INSERT INTO memory_scopes (memory_id, scope_type, scope_key) VALUES (%s, 'language', 'python');",
+            (rows[0]["id"],),
+        )
+
+        found = await server.recall("finding", tenant=TENANT, scopes=["language:python"])
+
+        assert "scoped legacy finding" in found
+        assert "Recalled 1 memories of 1 matching the filters" in found
+
     async def test_an_unfiltered_recall_keeps_the_original_headline(self, wired):
         found = await server.recall("finding", tenant=TENANT, limit=5)
 
