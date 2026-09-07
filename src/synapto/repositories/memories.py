@@ -129,6 +129,7 @@ class MemoryRepository:
         summary: str | None = None,
         metadata_patch: dict[str, Any] | None = None,
         scopes: ScopeSet | None = None,
+        depth_layer: str | None = None,
     ) -> dict[str, Any] | None:
         """Update a memory's fields and its scopes in one transaction.
 
@@ -155,6 +156,7 @@ class MemoryRepository:
                     embedding_dim=embedding_dim,
                     summary=summary,
                     metadata_patch=metadata_patch,
+                    depth_layer=depth_layer,
                 ),
             )
             row = await cursor.fetchone()
@@ -175,9 +177,12 @@ class MemoryRepository:
         embedding_dim: int | None,
         summary: str | None,
         metadata_patch: dict[str, Any] | None,
+        depth_layer: str | None = None,
     ) -> dict[str, Any]:
         return {
             "id": memory_id,
+            "layer_provided": depth_layer is not None,
+            "layer": depth_layer,
             "content_provided": content is not None,
             "content": content,
             "summary_provided": summary is not None,
@@ -199,6 +204,7 @@ class MemoryRepository:
         embedding_dim: int | None = None,
         summary: str | None = None,
         metadata_patch: dict[str, Any] | None = None,
+        depth_layer: str | None = None,
     ) -> dict[str, Any] | None:
         return await self._db.execute_one(
             sql.UPDATE_MEMORY,
@@ -209,6 +215,7 @@ class MemoryRepository:
                 embedding_dim=embedding_dim,
                 summary=summary,
                 metadata_patch=metadata_patch,
+                depth_layer=depth_layer,
             ),
         )
 

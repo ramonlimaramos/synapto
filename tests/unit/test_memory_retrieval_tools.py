@@ -248,6 +248,66 @@ async def test_update_memory_updates_summary_and_metadata_patch(pg, provider, mo
     await _cleanup(pg)
 
 
+async def test_update_memory_changes_the_depth_layer(pg, provider, monkeypatch):
+    """A finished packet moves to ephemeral in the same call that marks it done."""
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "handoff packet")
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_cache", DummyCache())
+
+    output = await server.update_memory(str(memory_id), metadata_patch={"status": "done"}, depth_layer="ephemeral")
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["depth_layer"] == "ephemeral"
+    assert row["metadata"]["status"] == "done"
+    assert row["content"] == "handoff packet"
+    assert f"updated memory {memory_id} (metadata, depth_layer)" in output
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_changes_the_depth_layer_with_scopes_in_one_call(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "scoped packet")
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_cache", DummyCache())
+
+    await server.update_memory(str(memory_id), scopes=["area:finance"], depth_layer="stable")
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["depth_layer"] == "stable"
+    assert [(s.scope_type, s.scope_key) for s in row["scopes"].scopes] == [("area", "finance")]
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_leaves_the_layer_alone_when_not_asked(pg, provider, monkeypatch):
+    await run_migrations(pg)
+    await _cleanup(pg)
+    memory_id = await _insert_memory(pg, provider, "untouched layer")
+    monkeypatch.setattr(server, "_pg", pg)
+    monkeypatch.setattr(server, "_cache", DummyCache())
+    before = (await MemoryRepository(pg).get_by_id(memory_id))["depth_layer"]
+
+    await server.update_memory(str(memory_id), summary="only the summary")
+
+    row = await MemoryRepository(pg).get_by_id(memory_id)
+    assert row is not None
+    assert row["depth_layer"] == before
+
+    await _cleanup(pg)
+
+
+async def test_update_memory_rejects_an_unknown_depth_layer():
+    """The layer alone counts as a change, and an unknown one is refused before any database access."""
+    with pytest.raises(ToolError, match="core, stable, working, ephemeral"):
+        await server.update_memory("550e8400-e29b-41d4-a716-446655440000", depth_layer="archived")
+
+
 async def test_update_memory_rejects_empty_patch():
     with pytest.raises(ToolError, match="provide at least one field to update"):
         await server.update_memory("00000000-0000-0000-0000-000000000000")

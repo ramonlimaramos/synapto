@@ -38,10 +38,10 @@ Claude → You: I read the handoff, fetched its context, and can continue.
 
 | What you say | What Synapto does |
 |---|---|
-| "Codex, leave this for Claude." | Stores a `project` memory with `metadata.kind = "agent_handoff"`. |
+| "Codex, leave this for Claude." | Looks the task's packet up by `metadata_filter`; extends it, or stores a `project` / `handoff` memory with `metadata.kind = "handoff"` when none exists. |
 | "Claude, continue from this handoff ID." | Fetches the full memory with `get_memory` and verifies the metadata. |
-| "Any handoffs for me?" | Uses `recall` to find ranked candidates, then fetches the relevant packet. |
-| "Mark it ready for review." | Appends a follow-up memory with the same `task_id`. |
+| "Any handoffs for me?" | Looks packets up by `metadata_filter` on `kind`, `to_agent` and `status` — an exact match, not a ranked search. |
+| "Mark it ready for review." | Extends the same packet with `update_memory(append=…, metadata_patch={"status": …})`; one packet per `task_id`. |
 
 See [Cross-agent handoffs](docs/handoffs.md) for the lifecycle, schema, and
 Claude/Cursor recipes.
@@ -214,7 +214,7 @@ A scoped `recall` returns a memory when it is `global:all`, or when every scope 
 | `ping` | Check MCP transport health without touching PostgreSQL, Redis, or embeddings |
 | `get_memory` | Fetch the complete content and metadata for one recalled memory |
 | `get_memories` | Fetch complete content for multiple recalled memories |
-| `update_memory` | Replace, append, or patch fields (including `scopes`) on an existing memory |
+| `update_memory` | Replace, append, or patch fields (including `scopes` and `depth_layer`) on an existing memory; a finished handoff moves to `ephemeral` in the same call |
 | `relate` | Link two entities ("acme/api" --[publishes]--> "orders.created") |
 | `forget` | Soft-delete a memory; human-authored memories require `allow_human=true` |
 | `trust_feedback` | Mark a memory as helpful or unhelpful |
@@ -223,8 +223,8 @@ A scoped `recall` returns a memory when it is `global:all`, or when every scope 
 | `list_entities_tool` | Browse known entities |
 | `memory_stats` | View counts and distribution |
 | `maintain` | Run decay and ephemeral cleanup |
-| `agent_handoff_template` | Build the structured `remember` payload for a cross-agent handoff |
-| `handoff_inbox_template` | Build the `recall` call that lists handoffs waiting for an agent |
+| `agent_handoff_template` | Instructions for a task's single handoff packet: look it up by `metadata_filter`, extend it with `update_memory`, create it with `remember` only when none exists |
+| `handoff_inbox_template` | Build the `metadata_filter` lookup that returns the packets waiting for an agent |
 
 ### Tool Field Limits
 

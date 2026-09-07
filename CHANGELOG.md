@@ -8,11 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- `update_memory` accepts `depth_layer`. A handoff or checkpoint whose status reaches `done` moves to `ephemeral` in the same call, so maintenance retires it instead of leaving a finished task ranking as `working` forever; an unknown layer is refused before any database access, and a layer change alone counts as a change. Applied in the same statement as the other fields, and in the same transaction as a scope change (#117)
 - `metadata_filter` accepts a list of scalars as a value, meaning "the stored list contains every element": `recall("kafka", metadata_filter={"products": ["inbox"]})` matches a memory whose `products` is `["assistant", "inbox"]`. A scalar still means equality and a nested object is still refused. This is what a facet needs and what a scope cannot give: a scope is a condition the query must name for every type the memory carries — the right rule for governed context, the wrong tool for describing what a memory is about, since stamping products, repositories and language as scopes on the reorganized store hid 1,216 of 1,296 memories from every read that did not guess all of them. Facets now live in metadata (`products`, `repos`, `language`), the README states the distinction — scopes gate, metadata describes — and the golden set carries list-facet cases. No SQL change: `@>` and the GIN index from #76 already do this (#118)
+
+### Changed
+
+- Handoffs are one packet per task. The `agent_handoff` prompt and `agent_handoff_template` tool now instruct the writer to look the task's packet up first — `recall(task_id, metadata_filter={"kind": "handoff", "task_id": …})`, also under the legacy kind — and to extend it with `update_memory(append=…, metadata_patch={"status": …})`; `remember` is the path only when no packet exists. The earlier rule, "append a new handoff instead of mutating the original", had turned single tasks into four near-identical memories, each a stale snapshot ranking against the others. The create path prescribes the writing contract the packet was missing: `subtype: "handoff"`, `origin: "agent"`, `scopes: ["area:<discipline>"]` (a new `area` parameter, default `software-engineering`; the repository stays in `metadata.repo` because scopes gate reads), tenant omitted or `<owner>/workspace`. `metadata.kind` is `handoff` (schema version 2); readers accept `agent_handoff` for one release. `handoff_inbox` and `handoff_inbox_template` look packets up by `metadata_filter` on `kind`, `to_agent`, `status` and optionally `task_id` instead of ranking a keyword query, and end by extending the same packet (#117)
 
 ### Fixed
 
 - A filtered `recall` (`scopes`, `metadata_filter` or `origin`) failed with "domain and scopes cannot be combined" whenever the last result rendered carried a legacy `domain`. The loop that formats results reused the tool's `domain` parameter as its loop variable, so the match count that follows inherited the last row's stored domain instead of the caller's argument and refused the caller's scopes as a conflicting axis. The count now uses the caller's arguments; a regression test renders a scoped memory that still carries a legacy domain
+||||||| parent of 6ebf320 (feat(handoff): one packet per task; templates prescribe the writing contract; update_memory accepts depth_layer)
 
 ## [0.8.1] - 2026-09-07
 
