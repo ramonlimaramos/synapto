@@ -203,7 +203,7 @@ A task has ONE handoff packet. Look it up before writing:
 ```text
 update_memory(
   memory_id="<packet id>",
-  append="\n\n## <date> — {phase}\n<what changed since the last entry, what is next, blockers>",
+  append="\\n\\n## <date> — {phase}\\n<what changed since the last entry, what is next, blockers>",
   metadata_patch={patch_json},
 )
 ```
