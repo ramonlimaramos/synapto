@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-07
+
 ### Added
 
 - `update_memory` accepts `depth_layer`. A handoff or checkpoint whose status reaches `done` moves to `ephemeral` in the same call, so maintenance retires it instead of leaving a finished task ranking as `working` forever; an unknown layer is refused before any database access, and a layer change alone counts as a change. Applied in the same statement as the other fields, and in the same transaction as a scope change (#117)
