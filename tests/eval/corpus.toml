@@ -1364,3 +1364,17 @@ key = "bg-docs-metrics"
 content = "acme/docs exposes metrics on port 23 for the scraper."
 type = "project"
 layer = "core"
+
+[[memory]]
+key = "metadata-facet-inbox"
+content = "acme/mailer inbox ingestion consumer retries on broker timeout; the facet list names every product it serves."
+type = "project"
+layer = "working"
+metadata = { products = ["assistant", "inbox"], language = "elixir" }
+
+[[memory]]
+key = "metadata-facet-assistant"
+content = "acme/mailer inbox ingestion consumer retries on broker timeout; the facet list names every product it serves."
+type = "project"
+layer = "working"
+metadata = { products = ["assistant"], language = "python" }

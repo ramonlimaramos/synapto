@@ -190,12 +190,8 @@ def _build_scope_filter(scopes: ScopeSet | None) -> tuple[str, dict[str, Any]]:
 
 
 MAX_METADATA_FILTER_KEYS = 20
+MAX_METADATA_FILTER_LIST_ITEMS = 20
 
-# Containment reads a flat mapping of scalars. Nesting is refused rather than
-# passed through: `@>` on a nested object matches sub-objects and treats arrays
-# as subsets, so `{"a": {"b": 1}}` and `{"tags": ["x"]}` mean something subtler
-# than the exact-key equality this filter exists to provide, and a caller would
-# have to know which. One level of scalars has exactly one reading.
 _METADATA_SCALARS = (str, int, float, bool, type(None))
 
 
@@ -204,12 +200,20 @@ class InvalidMetadataFilterError(ValueError):
 
 
 def validate_metadata_filter(metadata_filter: object) -> dict[str, Any]:
-    """Return the filter if it is a flat mapping of scalars, else explain why not.
+    """Return the filter if every value is a scalar or a list of scalars, else explain why not.
+
+    A scalar value means equality, which is what ``@>`` does for a scalar. A
+    list value means "the stored list contains every element", which is also
+    exactly what ``@>`` does for an array — and it is the question a facet
+    answers ("every memory about ``reasoning-inbox``" against a stored
+    ``products`` list). A nested object is still refused: containment on an
+    object matches a sub-object, which is not the equality a caller asked for.
 
     Raises:
         InvalidMetadataFilterError: the filter is not a mapping, is empty, has a
             non-string key, carries more than :data:`MAX_METADATA_FILTER_KEYS`
-            entries, or nests a value.
+            entries, nests an object, or carries a list that is empty, longer
+            than :data:`MAX_METADATA_FILTER_LIST_ITEMS`, or not all scalars.
     """
     if not isinstance(metadata_filter, Mapping):
         raise InvalidMetadataFilterError(
@@ -227,13 +231,39 @@ def validate_metadata_filter(metadata_filter: object) -> dict[str, Any]:
     for key, value in metadata_filter.items():
         if not isinstance(key, str):
             raise InvalidMetadataFilterError(f"metadata_filter keys must be strings, got {type(key).__name__}")
-        if not isinstance(value, _METADATA_SCALARS):
+        if isinstance(value, list):
+            _validate_list_value(key, value)
+        elif not isinstance(value, _METADATA_SCALARS):
             raise InvalidMetadataFilterError(
                 f"metadata_filter value for {key!r} is a {type(value).__name__}; only one level of scalar "
-                "values is accepted, because containment on nested objects and arrays does not mean "
-                "exact-key equality"
+                "values, or a list of scalars, is accepted, because containment on a nested object does "
+                "not mean exact-key equality"
             )
     return dict(metadata_filter)
+
+
+def _validate_list_value(key: str, value: list) -> None:
+    """Refuse a list that would not mean "contains every element".
+
+    An empty list is contained by every array, so ``{"products": []}`` would
+    match every memory that has the key — a filter that filters nothing.
+    """
+    if not value:
+        raise InvalidMetadataFilterError(
+            f"metadata_filter list for {key!r} is empty — an empty list is contained by every array, "
+            "so it would match every memory that has the key; omit the key instead"
+        )
+    if len(value) > MAX_METADATA_FILTER_LIST_ITEMS:
+        raise InvalidMetadataFilterError(
+            f"metadata_filter list for {key!r} accepts at most {MAX_METADATA_FILTER_LIST_ITEMS} elements "
+            f"(got {len(value)})"
+        )
+    for element in value:
+        if not isinstance(element, _METADATA_SCALARS):
+            raise InvalidMetadataFilterError(
+                f"metadata_filter list for {key!r} carries a {type(element).__name__}; list elements must be "
+                "scalars, because containment on a nested value does not mean exact-key equality"
+            )
 
 
 def _build_memory_filters(

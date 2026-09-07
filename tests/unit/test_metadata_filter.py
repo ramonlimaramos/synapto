@@ -1,11 +1,12 @@
-"""Tests for the metadata equality filter and the uncapped match count.
+"""Tests for the metadata filter and the uncapped match count.
 
 Two claims are worth proving here, and they are different claims.
 
-The filter must mean *exact-key equality* and nothing subtler, which is why
-nesting is refused rather than handed to `@>` — containment treats arrays as
-subsets and matches sub-objects, so a nested filter would answer a question the
-caller did not ask.
+The filter must have exactly one reading per value shape. A scalar means
+equality and a list means "the stored list contains every element" — both are
+what `@>` does, and both are questions a caller actually asks. A nested object
+is refused rather than handed to `@>`, because containment on an object matches
+a sub-object, which is not the equality the caller asked for.
 
 The count must be *a count*. The failure being replaced is a threshold computed
 from a page: it looks like a number, and it silently stops being one as the
@@ -23,6 +24,7 @@ from psycopg.types.json import Jsonb
 from synapto import server
 from synapto.search.hybrid import (
     MAX_METADATA_FILTER_KEYS,
+    MAX_METADATA_FILTER_LIST_ITEMS,
     InvalidMetadataFilterError,
     count_memories,
     hybrid_search,
@@ -47,18 +49,41 @@ class TestFilterValidation:
         with pytest.raises(InvalidMetadataFilterError, match="matches every memory"):
             validate_metadata_filter({})
 
-    @pytest.mark.parametrize("value", [{"nested": 1}, ["a", "b"], ("a",), {"a": {"b": {"c": 1}}}])
-    def test_a_nested_value_is_rejected(self, value):
+    @pytest.mark.parametrize("value", [{"nested": 1}, ("a",), {"a": {"b": {"c": 1}}}])
+    def test_a_nested_object_is_rejected(self, value):
         with pytest.raises(InvalidMetadataFilterError, match="only one level of scalar"):
             validate_metadata_filter({"key": value})
 
     def test_the_nesting_rejection_explains_the_reason(self):
         with pytest.raises(InvalidMetadataFilterError, match="does not mean exact-key equality"):
-            validate_metadata_filter({"tags": ["x"]})
+            validate_metadata_filter({"tags": {"x": 1}})
 
     def test_the_rejection_names_the_offending_key(self):
         with pytest.raises(InvalidMetadataFilterError, match="'tags'"):
-            validate_metadata_filter({"failure_class": "x", "tags": ["y"]})
+            validate_metadata_filter({"failure_class": "x", "tags": {"y": 1}})
+
+    def test_a_list_of_scalars_is_accepted(self):
+        payload = {"products": ["jerry", "reasoning-inbox"], "counts": [1, 2], "flags": [True, None]}
+
+        assert validate_metadata_filter(payload) == payload
+
+    def test_an_empty_list_is_rejected_rather_than_matching_every_keyed_memory(self):
+        with pytest.raises(InvalidMetadataFilterError, match="contained by every array"):
+            validate_metadata_filter({"products": []})
+
+    @pytest.mark.parametrize("element", [{"a": 1}, ["nested"], ("t",)])
+    def test_a_list_with_a_nested_element_is_rejected(self, element):
+        with pytest.raises(InvalidMetadataFilterError, match="list elements must be scalars"):
+            validate_metadata_filter({"products": ["ok", element]})
+
+    def test_the_list_length_is_capped(self):
+        with pytest.raises(InvalidMetadataFilterError, match=str(MAX_METADATA_FILTER_LIST_ITEMS)):
+            validate_metadata_filter({"products": [f"p{i}" for i in range(MAX_METADATA_FILTER_LIST_ITEMS + 1)]})
+
+    def test_the_list_cap_itself_is_accepted(self):
+        payload = {"products": [f"p{i}" for i in range(MAX_METADATA_FILTER_LIST_ITEMS)]}
+
+        assert validate_metadata_filter(payload) == payload
 
     def test_a_non_string_key_is_rejected(self):
         with pytest.raises(InvalidMetadataFilterError, match="keys must be strings"):
@@ -176,6 +201,56 @@ class TestContainmentSemantics:
         ) == 1
 
 
+class TestListContainment:
+    """A list value means the stored list contains every element; a scalar never matches a list."""
+
+    async def _seed(self, store, provider):
+        embedding = (await provider.embed(["finding"]))[0]
+        await _insert(store, embedding, provider.dimension, "inbox in hermes",
+                      {"products": ["jerry", "reasoning-inbox"], "language": "elixir"})
+        await _insert(store, embedding, provider.dimension, "jerry only",
+                      {"products": ["jerry"], "language": "python"})
+        await _insert(store, embedding, provider.dimension, "scalar product",
+                      {"products": "reasoning-inbox"})
+
+    async def test_a_list_matches_a_stored_superset(self, store, provider):
+        await self._seed(store, provider)
+
+        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["reasoning-inbox"]}) == 1
+        assert await count_memories(store, tenant=TENANT, metadata_filter={"products": ["jerry"]}) == 2
+
+    async def test_every_listed_element_must_be_present(self, store, provider):
+        await self._seed(store, provider)
+
+        both = await count_memories(
+            store, tenant=TENANT, metadata_filter={"products": ["jerry", "reasoning-inbox"]}
+        )
+        disjoint = await count_memories(store, tenant=TENANT, metadata_filter={"products": ["billing"]})
+
+        assert both == 1
+        assert disjoint == 0
+
+    async def test_a_scalar_filter_does_not_match_a_stored_list(self, store, provider):
+        """Equality is unchanged: the scalar reading only matches the memory that stored a scalar."""
+        await self._seed(store, provider)
+
+        results = await hybrid_search(
+            store, provider, "finding", tenant=TENANT, limit=50, metadata_filter={"products": "reasoning-inbox"}
+        )
+
+        assert [r.content for r in results] == ["scalar product"]
+
+    async def test_a_list_composes_with_a_scalar_facet(self, store, provider):
+        await self._seed(store, provider)
+
+        results = await hybrid_search(
+            store, provider, "finding", tenant=TENANT, limit=50,
+            metadata_filter={"products": ["jerry"], "language": "elixir"},
+        )
+
+        assert [r.content for r in results] == ["inbox in hermes"]
+
+
 class TestTheIndexIsUsed:
     async def test_explain_reports_the_gin_index_for_containment(self, store):
         """A filter that cannot use the index is a sequential scan wearing a filter's name.
@@ -190,6 +265,19 @@ class TestTheIndexIsUsed:
             cursor = await conn.execute(
                 "EXPLAIN SELECT id FROM memories WHERE metadata @> %s::jsonb;",
                 (Jsonb({"failure_class": "missing_docstring"}),),
+            )
+            rows = await cursor.fetchall()
+
+        plan = " ".join(r["QUERY PLAN"] for r in rows)
+
+        assert "idx_memories_metadata_gin" in plan
+
+    async def test_explain_reports_the_gin_index_for_a_list_value(self, store):
+        async with store.acquire() as conn, conn.transaction():
+            await conn.execute("SET LOCAL enable_seqscan = off;")
+            cursor = await conn.execute(
+                "EXPLAIN SELECT id FROM memories WHERE metadata @> %s::jsonb;",
+                (Jsonb({"products": ["reasoning-inbox"]}),),
             )
             rows = await cursor.fetchall()
 
@@ -254,7 +342,8 @@ class TestRecallExposesBoth:
     @pytest.mark.parametrize(
         ("bad", "expected"),
         [
-            ({"tags": ["x"]}, "only one level of scalar"),
+            ({"tags": {"x": 1}}, "only one level of scalar"),
+            ({"tags": []}, "contained by every array"),
             ({}, "matches every memory"),
             ("failure_class", "must be a JSON object"),
             ([("a", 1)], "must be a JSON object"),
@@ -274,6 +363,16 @@ class TestRecallExposesBoth:
         monkeypatch.setattr(server, "hybrid_search", fake_search)
 
         with pytest.raises(ToolError):
-            await server.recall("finding", tenant=TENANT, metadata_filter={"tags": ["x"]})
+            await server.recall("finding", tenant=TENANT, metadata_filter={"tags": {"x": 1}})
 
         assert called == []
+
+    async def test_a_list_facet_is_reachable_through_the_tool(self, wired, provider):
+        embedding = (await provider.embed(["finding"]))[0]
+        await _insert(wired, embedding, provider.dimension, "faceted finding",
+                      {"products": ["jerry", "reasoning-inbox"]})
+
+        found = await server.recall("finding", tenant=TENANT, metadata_filter={"products": ["reasoning-inbox"]})
+
+        assert "faceted finding" in found
+        assert "Recalled 1 memories of 1 matching the filters" in found

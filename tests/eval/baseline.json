@@ -1,5 +1,5 @@
 {
-  "corpus_digest": "2785dfaa6460eb29",
+  "corpus_digest": "f749abf4cf3998ba",
   "metrics": {
     "decay": {
       "cases": 6,
@@ -22,13 +22,13 @@
       "recall_at_5": 1.0
     },
     "metadata": {
-      "cases": 6,
+      "cases": 8,
       "mrr_at_10": 1.0,
       "recall_at_5": 1.0
     },
     "overall": {
-      "cases": 55,
-      "mrr_at_10": 0.9481818181818181,
+      "cases": 57,
+      "mrr_at_10": 0.95,
       "recall_at_5": 1.0
     },
     "scopes": {
