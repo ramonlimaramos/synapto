@@ -69,6 +69,7 @@ async def test_agent_handoff_prompt_looks_the_packet_up_before_writing() -> None
     assert "update_memory(" in text
     assert "never write a sibling" in text
     assert text.index("update_memory(") < text.index("call `remember` exactly once")
+    assert 'append="\\n\\n## <date> — planning\\n' in text
 
 
 async def test_agent_handoff_prompt_prescribes_the_writing_contract() -> None:
